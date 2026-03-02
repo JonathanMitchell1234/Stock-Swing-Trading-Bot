@@ -79,6 +79,13 @@ EMA_SLOPE_PERIOD = 5            # bars to measure EMA-50 slope direction
 DEAD_MONEY_DAYS = 10            # if position flat for this many trading days
 DEAD_MONEY_THRESHOLD = 0.02     # has moved less than 2% total
 
+# ── Time stop: if momentum never materializes, free capital ─
+TIME_STOP_ENABLED = False
+TIME_STOP_DAYS_BULL = 12
+TIME_STOP_MIN_PEAK_PROFIT_BULL = 0.015
+TIME_STOP_DAYS_BEAR = 7
+TIME_STOP_MIN_PEAK_PROFIT_BEAR = 0.01
+
 # ── Cooldown: don't re-enter a symbol within N days of exit ──
 RE_ENTRY_COOLDOWN_DAYS = 5
 
@@ -160,6 +167,30 @@ SR_SUPPORT_BONUS = 0            # no scoring bonus from S/R (used for info only)
 
 # ── Gap filter: avoid chasing exhaustion gaps ──────────────
 GAP_UP_MAX_PCT = 0.08           # skip if today gapped up > 8%
+
+# ── Entry quality / robustness filters ─────────────────────
+# Require enough listing history to avoid unstable newly listed names.
+MIN_BARS_HISTORY_ENTRY = 120
+# Skip overly volatile names where ATR is too large relative to price.
+MAX_ATR_PCT_BULL = 0.15
+MAX_ATR_PCT_BEAR = 0.20
+# Require a minimum reward:risk profile before entering.
+MIN_RR_RATIO_BULL = 1.8
+MIN_RR_RATIO_BEAR = 1.5
+
+# ── Market breadth filter (optional) ───────────────────────
+# Breadth = fraction of symbols trading above EMA-50.
+BREADTH_FILTER_ENABLED = True
+BREADTH_MIN_SYMBOLS = 20
+BREADTH_MIN_BULL = 0.35
+BREADTH_MAX_BEAR = 0.55
+
+# ── Earnings blackout filter (optional) ────────────────────
+# CSV columns expected: symbol,date  (date format: YYYY-MM-DD)
+EARNINGS_FILTER_ENABLED = False
+EARNINGS_CALENDAR_CSV = "data/earnings_calendar.csv"
+EARNINGS_BLACKOUT_DAYS_BEFORE = 2
+EARNINGS_BLACKOUT_DAYS_AFTER = 1
 
 # ── Dynamic threshold: adjust score bar by market quality ──
 DYNAMIC_THRESHOLD_ENABLED = False

@@ -152,8 +152,15 @@ class AlpacaBroker:
             limit=limit,
         )
         df = bars.df.copy()
+        if df is None or df.empty:
+            return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
+
+        required = ["open", "high", "low", "close", "volume"]
+        if not all(col in df.columns for col in required):
+            return pd.DataFrame(columns=required)
+
         df.index = pd.to_datetime(df.index)
-        df = df[["open", "high", "low", "close", "volume"]]
+        df = df[required]
         return df
 
     def get_latest_price(self, symbol: str) -> float:

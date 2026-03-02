@@ -380,6 +380,14 @@ def check_entry(
     price = cur["close"]
     atr = cur["atr"]
 
+    if price <= 0 or pd.isna(price) or pd.isna(atr):
+        return None
+
+    atr_pct = atr / price
+    max_atr_pct = config.MAX_ATR_PCT_BEAR if use_bear_logic else config.MAX_ATR_PCT_BULL
+    if atr_pct > max_atr_pct:
+        return None
+
     reason = f"Score {score}: {', '.join(factors)}"
 
     signal = {
@@ -424,6 +432,18 @@ def _check_exit_bear(
 
     hard_reasons: list[str] = []
     soft_reasons: list[str] = []
+
+    if config.TIME_STOP_ENABLED and entry_price > 0 and hold_days >= config.TIME_STOP_DAYS_BEAR:
+        lookback = max(2, hold_days + 1)
+        window = df.tail(min(len(df), lookback))
+        if not window.empty:
+            peak_price = float(window["high"].max())
+            peak_gain = (peak_price - entry_price) / entry_price
+            weak_structure = (price < ema_trend) or (ema_fast < ema_slow)
+            if weak_structure and peak_gain < config.TIME_STOP_MIN_PEAK_PROFIT_BEAR:
+                hard_reasons.append(
+                    f"Time stop ({hold_days}d, peak {peak_gain*100:.1f}%)"
+                )
 
     if price < ema_trend and ema_fast < ema_slow:
         hard_reasons.append("Bear-mode trend break")
@@ -512,6 +532,18 @@ def check_exit(
 
     hard_reasons = []
     soft_reasons = []
+
+    if config.TIME_STOP_ENABLED and entry_price > 0 and hold_days >= config.TIME_STOP_DAYS_BULL:
+        lookback = max(2, hold_days + 1)
+        window = df.tail(min(len(df), lookback))
+        if not window.empty:
+            peak_price = float(window["high"].max())
+            peak_gain = (peak_price - entry_price) / entry_price
+            weak_structure = (price < ema_trend) or (ema_fast < ema_slow)
+            if weak_structure and peak_gain < config.TIME_STOP_MIN_PEAK_PROFIT_BULL:
+                hard_reasons.append(
+                    f"Time stop ({hold_days}d, peak {peak_gain*100:.1f}%)"
+                )
 
     # ── HARD: price below BOTH EMA-50 and EMA-200 (trend destroyed) ──
     if ema_200 is not None and not pd.isna(ema_200):

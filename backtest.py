@@ -32,6 +32,7 @@ import numpy as np
 import pandas as pd
 
 import config
+from entry_filters import EarningsCalendar
 from indicators import compute_all, compute_weekly_trend, realized_volatility
 from logger import get_logger
 from strategy import (
@@ -141,6 +142,8 @@ class Backtester:
         # Market-regime data (SPY EMA-200)
         self._regime_data: Optional[pd.DataFrame] = None
         self._last_regime = "bull"
+        self.earnings_calendar = EarningsCalendar()
+        self._breadth_cache: Dict[dt.date, float] = {}
 
         # Cooldown tracker: symbol → last exit date
         self._cooldowns: Dict[str, dt.date] = {}
@@ -174,8 +177,12 @@ class Backtester:
                     limit=10_000,
                 )
                 df = bars.df.copy()
+                required = ["open", "high", "low", "close", "volume"]
+                if df is None or df.empty or not all(col in df.columns for col in required):
+                    log.info("%s: no data in selected range, skipping", symbol)
+                    continue
                 df.index = pd.to_datetime(df.index)
-                df = df[["open", "high", "low", "close", "volume"]]
+                df = df[required]
 
                 if len(df) < config.EMA_TREND + 10:
                     log.warning("%s: not enough bars (%d), skipping", symbol, len(df))
@@ -203,17 +210,52 @@ class Backtester:
                         limit=10_000,
                     )
                     rdf = bars.df.copy()
-                    rdf.index = pd.to_datetime(rdf.index)
-                    rdf = rdf[["open", "high", "low", "close", "volume"]]
-                    rdf = compute_all(rdf)
-                    self._regime_data = rdf
-                    log.info("Loaded regime filter: %s (%d bars)", regime_sym, len(rdf))
+                    required = ["open", "high", "low", "close", "volume"]
+                    if rdf is None or rdf.empty or not all(col in rdf.columns for col in required):
+                        self._regime_data = None
+                    else:
+                        rdf.index = pd.to_datetime(rdf.index)
+                        rdf = rdf[required]
+                        rdf = compute_all(rdf)
+                        self._regime_data = rdf
+                        log.info("Loaded regime filter: %s (%d bars)", regime_sym, len(rdf))
                 except Exception as exc:
                     log.warning("Failed to load regime data %s: %s", regime_sym, exc)
 
         if not self._data:
             log.error("No data loaded – cannot backtest")
             sys.exit(1)
+
+        if config.BREADTH_FILTER_ENABLED:
+            self._build_breadth_cache()
+
+    def _build_breadth_cache(self) -> None:
+        """Precompute daily breadth for bull-entry symbols to speed up backtests."""
+        valid_counts: Dict[dt.date, int] = {}
+        above_counts: Dict[dt.date, int] = {}
+
+        for symbol in self._bull_entry_symbols:
+            df = self._data.get(symbol)
+            if df is None or df.empty:
+                continue
+            if "close" not in df.columns or "ema_trend" not in df.columns:
+                continue
+
+            subset = df[["close", "ema_trend"]].dropna()
+            if subset.empty:
+                continue
+
+            for idx, row in subset.iterrows():
+                day = idx.date()
+                valid_counts[day] = valid_counts.get(day, 0) + 1
+                if row["close"] > row["ema_trend"]:
+                    above_counts[day] = above_counts.get(day, 0) + 1
+
+        cache: Dict[dt.date, float] = {}
+        for day, valid in valid_counts.items():
+            if valid >= config.BREADTH_MIN_SYMBOLS:
+                cache[day] = above_counts.get(day, 0) / valid
+        self._breadth_cache = cache
 
     # ── helpers ──────────────────────────────────────────────
     def _portfolio_value(self, date: dt.date) -> float:
@@ -401,6 +443,27 @@ class Backtester:
                     return base - 1  # strong market: lower bar (more entries)
 
         return base
+
+    def _market_breadth(self, date: dt.date, symbols: List[str]) -> Optional[float]:
+        """Breadth = fraction of symbols above EMA-50 on `date`."""
+        if symbols is not self._bull_entry_symbols:
+            return None
+        return self._breadth_cache.get(date)
+
+    def _passes_breadth_filter(self, date: dt.date, regime: str) -> bool:
+        """Apply optional breadth gate before scanning new entries."""
+        if not config.BREADTH_FILTER_ENABLED:
+            return True
+
+        breadth = self._market_breadth(date, self._bull_entry_symbols)
+        if breadth is None:
+            return True
+
+        if regime == "bull":
+            return breadth >= config.BREADTH_MIN_BULL
+        if regime == "bear":
+            return breadth <= config.BREADTH_MAX_BEAR
+        return False
 
     # ── sector limit helper ──────────────────────────────────
     def _sector_ok(self, symbol: str) -> bool:
@@ -590,6 +653,18 @@ class Backtester:
         hard_reasons = []
         soft_reasons = []
 
+        if config.TIME_STOP_ENABLED and entry_price > 0 and hold_days >= config.TIME_STOP_DAYS_BULL:
+            lookback = max(2, hold_days + 1)
+            window = df.tail(min(len(df), lookback))
+            if not window.empty:
+                peak_price = float(window["high"].max())
+                peak_gain = (peak_price - entry_price) / entry_price
+                weak_structure = (price < ema_trend) or (ema_fast < ema_slow)
+                if weak_structure and peak_gain < config.TIME_STOP_MIN_PEAK_PROFIT_BULL:
+                    hard_reasons.append(
+                        f"Time stop ({hold_days}d, peak {peak_gain*100:.1f}%)"
+                    )
+
         if ema_200 is not None and not pd.isna(ema_200):
             if price < ema_trend and price < ema_200:
                 hard_reasons.append("Below EMA-50 & EMA-200")
@@ -761,6 +836,10 @@ class Backtester:
                 self.equity_curve.append((date, equity))
                 return
 
+        if not self._passes_breadth_filter(date, market_regime):
+            self.equity_curve.append((date, equity))
+            return
+
         atr_stop_mult = config.get_atr_stop_mult(equity)
         atr_profit_mult = config.get_atr_profit_mult(equity)
         vol_scale = self._vol_regime_scale(date) if market_regime == "bull" else 1.0
@@ -785,6 +864,9 @@ class Backtester:
                 if not self._sector_ok(symbol):
                     continue
 
+                if self.earnings_calendar.is_blocked(symbol, date):
+                    continue
+
                 # Re-entry cooldown
                 last_exit = self._cooldowns.get(symbol)
                 if last_exit and (date - last_exit).days < config.RE_ENTRY_COOLDOWN_DAYS:
@@ -792,6 +874,9 @@ class Backtester:
 
                 df = self._get_df_up_to(symbol, date)
                 if df is None:
+                    continue
+
+                if len(df) < config.MIN_BARS_HISTORY_ENTRY:
                     continue
 
                 row = self._get_row(symbol, date)
@@ -852,6 +937,20 @@ class Backtester:
                 profit_mult = config.BEAR_ATR_PROFIT_MULTIPLIER if entry_mode == "bear" else atr_profit_mult
                 stop_loss = round(entry_price - atr * stop_mult, 2)
                 take_profit = round(entry_price + atr * profit_mult, 2)
+
+                atr_pct = atr / entry_price if entry_price > 0 else float("inf")
+                max_atr_pct = config.MAX_ATR_PCT_BEAR if entry_mode == "bear" else config.MAX_ATR_PCT_BULL
+                if atr_pct > max_atr_pct:
+                    continue
+
+                risk_per_share = entry_price - stop_loss
+                reward_per_share = take_profit - entry_price
+                if risk_per_share <= 0 or reward_per_share <= 0:
+                    continue
+                rr_ratio = reward_per_share / risk_per_share
+                min_rr = config.MIN_RR_RATIO_BEAR if entry_mode == "bear" else config.MIN_RR_RATIO_BULL
+                if rr_ratio < min_rr:
+                    continue
 
                 qty = self._size_position(entry_price, stop_loss, date)
 

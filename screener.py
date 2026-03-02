@@ -34,8 +34,14 @@ class Screener:
 
         for symbol in symbols:
             try:
-                df = self.broker.get_bars(symbol)
+                df = self.broker.get_bars(
+                    symbol,
+                    limit=max(config.BARS_LOOKBACK, config.MIN_BARS_HISTORY_ENTRY),
+                )
                 if df is None or len(df) < config.EMA_TREND + 5:
+                    continue
+
+                if len(df) < config.MIN_BARS_HISTORY_ENTRY:
                     continue
 
                 df = compute_all(df)
@@ -69,3 +75,38 @@ class Screener:
 
         log.info("Screener: %d / %d symbols passed pre-filter", len(candidates), len(symbols))
         return candidates
+
+    def compute_breadth(self, symbols: List[str] | None = None) -> float | None:
+        """
+        Compute market breadth as the fraction of symbols above EMA-50.
+        Returns None if too few symbols had usable data.
+        """
+        symbols = symbols or config.WATCHLIST
+        valid = 0
+        above = 0
+
+        for symbol in symbols:
+            try:
+                df = self.broker.get_bars(
+                    symbol,
+                    limit=max(config.BARS_LOOKBACK, config.EMA_TREND + 10),
+                )
+                if df is None or len(df) < config.EMA_TREND + 5:
+                    continue
+
+                df = compute_all(df)
+                row = latest_row(df)
+                close = row.get("close", None)
+                ema_trend = row.get("ema_trend", None)
+                if close is None or ema_trend is None or pd.isna(close) or pd.isna(ema_trend):
+                    continue
+
+                valid += 1
+                if close > ema_trend:
+                    above += 1
+            except Exception:
+                continue
+
+        if valid < config.BREADTH_MIN_SYMBOLS:
+            return None
+        return above / valid

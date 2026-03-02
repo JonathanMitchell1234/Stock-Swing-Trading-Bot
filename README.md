@@ -154,6 +154,14 @@ Key bear-adaptation settings are in `config.py`:
 - `BEAR_ATR_STOP_MULTIPLIER`, `BEAR_ATR_PROFIT_MULTIPLIER`
 - `BEAR_TRAILING_STOP_*` and `BEAR_MAX_POSITION_SCALE`
 
+### Optional Robustness Filters
+Additional generalization controls are available:
+- `BREADTH_FILTER_ENABLED`, `BREADTH_MIN_BULL`, `BREADTH_MAX_BEAR`, `BREADTH_MIN_SYMBOLS`
+- `EARNINGS_FILTER_ENABLED`, `EARNINGS_CALENDAR_CSV`, `EARNINGS_BLACKOUT_DAYS_BEFORE`, `EARNINGS_BLACKOUT_DAYS_AFTER`
+
+If you enable earnings filtering, copy `data/earnings_calendar.csv.example` to `data/earnings_calendar.csv`
+and keep it updated with `symbol,date` rows (YYYY-MM-DD).
+
 ### Watchlist
 The default watchlist includes ~60 liquid mid/large-cap stocks and ETFs. Edit `WATCHLIST` in `config.py` to customize.
 

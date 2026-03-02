@@ -9,6 +9,7 @@ import datetime as dt
 
 import config
 from broker import AlpacaBroker
+from entry_filters import EarningsCalendar
 from indicators import compute_all, compute_weekly_trend, realized_volatility
 from pdt_guard import PDTGuard
 from risk_manager import RiskManager
@@ -31,6 +32,7 @@ class TradeExecutor:
         self.broker = AlpacaBroker()
         self.pdt = PDTGuard()
         self.screener = Screener(self.broker)
+        self.earnings_calendar = EarningsCalendar()
         self._init_risk_manager()
         self._last_regime = "bull"
         self._sector_counts: dict[str, int] = {}
@@ -117,6 +119,38 @@ class TradeExecutor:
         except Exception as exc:
             log.warning("Market regime check failed: %s", exc)
             return self._last_regime
+
+    def _passes_breadth_filter(self, regime: str) -> bool:
+        """Apply optional market breadth gate before scanning entries."""
+        if not config.BREADTH_FILTER_ENABLED:
+            return True
+
+        breadth = self.screener.compute_breadth(config.WATCHLIST)
+        if breadth is None:
+            log.info("Breadth filter skipped (insufficient usable symbols)")
+            return True
+
+        if regime == "bull":
+            if breadth < config.BREADTH_MIN_BULL:
+                log.info(
+                    "Breadth gate blocked bull entries: breadth=%.1f%% < %.1f%%",
+                    breadth * 100,
+                    config.BREADTH_MIN_BULL * 100,
+                )
+                return False
+            return True
+
+        if regime == "bear":
+            if breadth > config.BREADTH_MAX_BEAR:
+                log.info(
+                    "Breadth gate blocked bear entries: breadth=%.1f%% > %.1f%%",
+                    breadth * 100,
+                    config.BREADTH_MAX_BEAR * 100,
+                )
+                return False
+            return True
+
+        return False
 
     # ─────────────────────────────────────────────────────────
     # EXIT SCAN – check existing positions for exit signals
@@ -253,6 +287,9 @@ class TradeExecutor:
             log.info("BEAR MARKET detected, bear strategy disabled - skipping entries")
             return 0
 
+        if not self._passes_breadth_filter(regime):
+            return 0
+
         # Advanced features: vol regime + dynamic threshold
         vol_scale = self._get_vol_regime_scale() if regime == "bull" else 1.0
         dyn_threshold = self._get_dynamic_threshold(spy_df) if regime == "bull" else config.BEAR_ENTRY_SCORE_THRESHOLD
@@ -277,6 +314,7 @@ class TradeExecutor:
 
         candidates = self.screener.screen(entry_symbols)
         opened = 0
+        today = dt.date.today()
 
         for c in candidates:
             symbol = c["symbol"]
@@ -290,6 +328,10 @@ class TradeExecutor:
                 break
 
             if not self.pdt.can_buy_today(symbol):
+                continue
+
+            if self.earnings_calendar.is_blocked(symbol, today):
+                log.info("Skipping %s - in earnings blackout window", symbol)
                 continue
 
             # Sector exposure limit
@@ -324,12 +366,27 @@ class TradeExecutor:
 
             entry_price = signal["price"]
             atr = signal["atr"]
+
+            atr_pct = atr / entry_price if entry_price > 0 else float("inf")
+            max_atr_pct = config.MAX_ATR_PCT_BEAR if regime == "bear" else config.MAX_ATR_PCT_BULL
+            if atr_pct > max_atr_pct:
+                continue
+
             if regime == "bear":
                 stop_loss = round(entry_price - atr * config.BEAR_ATR_STOP_MULTIPLIER, 2)
                 take_profit = round(entry_price + atr * config.BEAR_ATR_PROFIT_MULTIPLIER, 2)
             else:
                 stop_loss = self.risk.compute_stop_loss(entry_price, atr)
                 take_profit = self.risk.compute_take_profit(entry_price, atr)
+
+            risk_per_share = entry_price - stop_loss
+            reward_per_share = take_profit - entry_price
+            if risk_per_share <= 0 or reward_per_share <= 0:
+                continue
+            rr_ratio = reward_per_share / risk_per_share
+            min_rr = config.MIN_RR_RATIO_BEAR if regime == "bear" else config.MIN_RR_RATIO_BULL
+            if rr_ratio < min_rr:
+                continue
 
             qty = self.risk.calculate_position_size(
                 entry_price=entry_price,
