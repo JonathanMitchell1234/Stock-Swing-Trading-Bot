@@ -6,6 +6,7 @@ Centralises all API calls so the rest of the bot never touches the SDK directly.
 from __future__ import annotations
 
 import datetime as dt
+import math
 from typing import List, Optional
 
 import alpaca_trade_api as tradeapi
@@ -66,18 +67,29 @@ class AlpacaBroker:
     def submit_market_buy(
         self,
         symbol: str,
-        qty: int,
+        qty: float,
         stop_loss: Optional[float] = None,
         take_profit: Optional[float] = None,
     ):
         """Submit a bracket or simple market buy order."""
         if qty <= 0:
-            log.warning("Skipping buy – qty=%d for %s", qty, symbol)
+            log.warning("Skipping buy – qty=%.3f for %s", qty, symbol)
             return None
+
+        if config.FRACTIONAL_SHARES:
+            qty_value = round(float(qty), 3)
+        else:
+            qty_value = math.floor(float(qty))
+
+        if qty_value <= 0:
+            log.warning("Skipping buy – normalized qty=%.3f for %s", qty_value, symbol)
+            return None
+
+        is_fractional = abs(qty_value - int(qty_value)) > 1e-9
 
         order_params = dict(
             symbol=symbol,
-            qty=qty,
+            qty=qty_value,
             side="buy",
             type="market",
             time_in_force="day",
@@ -85,40 +97,72 @@ class AlpacaBroker:
 
         # Use bracket order if both SL and TP are provided
         if stop_loss and take_profit:
-            order_params["order_class"] = "bracket"
-            order_params["stop_loss"] = {"stop_price": round(stop_loss, 2)}
-            order_params["take_profit"] = {"limit_price": round(take_profit, 2)}
+            if is_fractional:
+                log.info("%s qty=%.3f is fractional; sending simple market order (no bracket)", symbol, qty_value)
+            else:
+                try:
+                    base_price = self.get_latest_price(symbol)
+                except Exception:
+                    base_price = None
+
+                sl = float(stop_loss)
+                tp = float(take_profit)
+                if base_price is not None and base_price > 0:
+                    min_sl = base_price - 0.02
+                    min_tp = base_price + 0.02
+                    if sl >= min_sl:
+                        sl = min_sl
+                    if tp <= min_tp:
+                        tp = min_tp
+
+                if sl > 0 and tp > 0 and sl < tp:
+                    order_params["order_class"] = "bracket"
+                    order_params["stop_loss"] = {"stop_price": round(sl, 2)}
+                    order_params["take_profit"] = {"limit_price": round(tp, 2)}
 
         log.info(
-            "BUY  %s  qty=%d  sl=%.2f  tp=%.2f",
+            "BUY  %s  qty=%.3f  sl=%.2f  tp=%.2f",
             symbol,
-            qty,
+            qty_value,
             stop_loss or 0,
             take_profit or 0,
         )
         return self.api.submit_order(**order_params)
 
-    def submit_market_sell(self, symbol: str, qty: int):
+    def submit_market_sell(self, symbol: str, qty: float):
         """Submit a market sell (exit position)."""
         if qty <= 0:
             return None
-        log.info("SELL %s  qty=%d", symbol, qty)
+        if config.FRACTIONAL_SHARES:
+            qty_value = round(float(qty), 3)
+        else:
+            qty_value = math.floor(float(qty))
+        if qty_value <= 0:
+            return None
+
+        log.info("SELL %s  qty=%.3f", symbol, qty_value)
         return self.api.submit_order(
             symbol=symbol,
-            qty=qty,
+            qty=qty_value,
             side="sell",
             type="market",
             time_in_force="day",
         )
 
-    def submit_trailing_stop(self, symbol: str, qty: int, trail_pct: float):
+    def submit_trailing_stop(self, symbol: str, qty: float, trail_pct: float):
         """Submit a trailing-stop sell order."""
         if qty <= 0:
             return None
-        log.info("TRAILING STOP  %s  qty=%d  trail=%.1f%%", symbol, qty, trail_pct * 100)
+
+        # Alpaca requires non-simple orders (like trailing_stop) to use whole shares.
+        qty_value = math.floor(float(qty))
+        if qty_value <= 0:
+            return None
+
+        log.info("TRAILING STOP  %s  qty=%d  trail=%.1f%%", symbol, qty_value, trail_pct * 100)
         return self.api.submit_order(
             symbol=symbol,
-            qty=qty,
+            qty=qty_value,
             side="sell",
             type="trailing_stop",
             trail_percent=str(round(trail_pct * 100, 2)),
@@ -146,11 +190,25 @@ class AlpacaBroker:
         Fetch historical bars and return a clean DataFrame.
         Columns: open, high, low, close, volume
         """
-        bars = self.api.get_bars(
-            symbol,
-            timeframe,
-            limit=limit,
-        )
+        end_dt = dt.datetime.now(dt.timezone.utc)
+        lookback_days = max(30, int(limit * 3))
+        start_dt = end_dt - dt.timedelta(days=lookback_days)
+
+        try:
+            bars = self.api.get_bars(
+                symbol,
+                timeframe,
+                start=start_dt.isoformat(),
+                end=end_dt.isoformat(),
+                limit=limit,
+                feed=config.ALPACA_DATA_FEED,
+            )
+        except TypeError:
+            bars = self.api.get_bars(
+                symbol,
+                timeframe,
+                limit=limit,
+            )
         df = bars.df.copy()
         if df is None or df.empty:
             return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])

@@ -169,7 +169,11 @@ class TradeExecutor:
         closed = 0
         for pos in positions:
             symbol = pos.symbol
-            qty = int(pos.qty)
+            try:
+                qty = float(pos.qty)
+            except (TypeError, ValueError):
+                log.warning("Skipping exit for %s - invalid qty '%s'", symbol, pos.qty)
+                continue
             hold_days = self.pdt.days_held(symbol) or 0
 
             # PDT check – can we sell today?
@@ -202,7 +206,7 @@ class TradeExecutor:
 
             if signal is not None:
                 log.info(
-                    "EXIT  %s  qty=%d  entry=%.2f  now=%.2f  reasons=%s",
+                    "EXIT  %s  qty=%.3f  entry=%.2f  now=%.2f  reasons=%s",
                     symbol,
                     qty,
                     entry_price,

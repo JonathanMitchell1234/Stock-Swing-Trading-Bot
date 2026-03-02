@@ -19,6 +19,10 @@ PAPER_BASE_URL = "https://paper-api.alpaca.markets"
 LIVE_BASE_URL = "https://api.alpaca.markets"
 
 BASE_URL = PAPER_BASE_URL if TRADING_MODE == "paper" else LIVE_BASE_URL
+ALPACA_DATA_FEED = os.getenv(
+    "ALPACA_DATA_FEED",
+    "iex" if TRADING_MODE == "paper" else "sip",
+)
 
 # ─────────────────────────────────────────────
 # Account Size & Fractional Shares
@@ -117,7 +121,9 @@ BEAR_WATCHLIST = [
     "DOG",                   # inverse Dow
     "SOXS",                  # inverse semiconductors
     "XLE", "XLP", "XLU",  # defensive/relative-strength sectors
-    "GLD", "TLT",           # risk-off assets
+    "GLD", "SLV",          # commodities
+    "TLT", "IEF",          # bonds
+    "XLV",                   # defensive healthcare ETF
 ]
 
 # ── Multi-timeframe confirmation (weekly trend) ────────────
@@ -158,6 +164,20 @@ SECTOR_MAP = {
     "SPY": "ETF", "QQQ": "ETF", "IWM": "ETF", "XLF": "ETF",
     "XLE": "ETF", "XLK": "ETF", "TQQQ": "ETF", "SOXL": "ETF",
     "ARKK": "ETF", "VTI": "ETF", "VOO": "ETF", "DIA": "ETF",
+    "SH": "Inverse ETF", "SQQQ": "Inverse ETF", "SOXS": "Inverse ETF",
+    "SPXU": "Inverse ETF", "PSQ": "Inverse ETF", "SDS": "Inverse ETF", "DOG": "Inverse ETF",
+    "GLD": "Commodity", "SLV": "Commodity",
+    "TLT": "Bonds", "IEF": "Bonds",
+    "PG": "Defensive", "KO": "Defensive", "PEP": "Defensive", "PM": "Defensive",
+    "NEE": "Utilities", "DUK": "Utilities", "SO": "Utilities",
+    "XLP": "ETF", "XLU": "ETF", "XLV": "ETF",
+    "CRWD": "Tech", "PANW": "Tech", "NOW": "Tech", "SNOW": "Tech",
+    "PLWN": "Tech", "DDOG": "Tech", "ZS": "Tech",
+    "TSLA": "Consumer",
+    "ASML": "Tech", "AMAT": "Tech", "LRCX": "Tech", "KLAC": "Tech",
+    "IBB": "ETF", "XBI": "ETF",
+    "VRTX": "Health", "REGN": "Health",
+    
 }
 
 # ── Support / Resistance ───────────────────────────────────
@@ -234,6 +254,8 @@ WATCHLIST = [
     # Tech (mid-high price)
     "AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA", "AMD", "TSM",
     "CRM", "ADBE", "NFLX", "QCOM", "INTC", "AVGO", "MU",
+    "CRWD", "PANW", "NOW", "SNOW", "PLWN", "DDOG", "ZS",
+    "ASML", "AMAT", "LRCX", "KLAC",
     # Tech (affordable < $50)
     "PLTR", "SOFI", "MARA", "HOOD", "SNAP", "U",
     # Finance
@@ -241,9 +263,14 @@ WATCHLIST = [
     "C", "SCHW",  # affordable financials
     # Healthcare
     "JNJ", "UNH", "PFE", "ABBV", "MRK", "LLY", "TMO",
+    "VRTX", "REGN",
     # Consumer / Retail
     "WMT", "COST", "HD", "NKE", "SBUX", "MCD", "DIS",
-    "F", "RIVN",  # affordable consumer
+    "F", "RIVN", "TSLA",  # affordable consumer
+    # Defensive / Staples
+    "PG", "KO", "PEP", "PM",
+    # Utilities
+    "NEE", "DUK", "SO",
     # Energy
     "XOM", "CVX", "COP", "SLB", "EOG",
     # Industrial
@@ -251,6 +278,9 @@ WATCHLIST = [
     # ETFs (mixed price range)
     "SPY", "QQQ", "IWM", "XLF", "XLE", "XLK",
     "TQQQ", "SOXL", "ARKK", "VTI", "VOO", "DIA",
+    "XLP", "XLU", "XLV", "IBB", "XBI",
+    # Commodities / Bonds
+    "GLD", "SLV", "TLT", "IEF",
 ]
 
 MIN_PRICE = 5.0           # lower floor for affordable stocks
