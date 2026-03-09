@@ -15,7 +15,6 @@
     "INTC",
     "AVGO",
     "MU",
-    "MARA",
     "HOOD",
     "SNAP",
     "JPM",
@@ -43,7 +42,6 @@
     "COP",
     "SLB",
     "EOG",
-    "DE",
     "BA",
     "GE",
     "HON",
@@ -62,7 +60,14 @@
     "DIA",
     "SNDK",
     "CRWD",
-    "WDC"
+    "WDC",
+    "TTD",
+    "TEAM",
+    "BBAI",
+    "MRVL",
+    "MPC",
+    "COF",
+    "COIN"
   ],
   "__INVERSE_WATCHLIST__": [
     "SQQQ",
@@ -71,16 +76,20 @@
     "SH",
     "PSQ"
   ],
-  "DEAD_MONEY_DAYS": 7,
-  "MIN_HOLD_CALENDAR_DAYS": 1,
+  "DEAD_MONEY_DAYS": 6,
+  "MIN_HOLD_CALENDAR_DAYS": 0,
   "RE_ENTRY_COOLDOWN_DAYS": 3,
   "ATR_STOP_MULTIPLIER": 3.0,
-  "ENTRY_SCORE_THRESHOLD": 4,
+  "ENTRY_SCORE_THRESHOLD": 5,
   "MAX_POSITION_PCT": 0.15,
   "MAX_PORTFOLIO_EXPOSURE_PCT": 0.95,
   "MAX_DAY_TRADES_ALLOWED": 3,
-  "PDT_LOOKBACK_DAYS": 3,
+  "PDT_LOOKBACK_DAYS": 6,
   "DYNAMIC_THRESHOLD_ENABLED": false,
   "__TRADING_MODE__": "live",
-  "SMALL_MAX_OPEN_POSITIONS": 6
+  "SMALL_MAX_OPEN_POSITIONS": 8,
+  "SCAN_INTERVAL_MINUTES": 5,
+  "CHECK_EXITS_MINUTES": 5,
+  "SMALL_MAX_POSITION_PCT": 0.35,
+  "VIX_HALT_THRESHOLD": 41.0
 }

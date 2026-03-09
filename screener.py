@@ -36,6 +36,10 @@ class Screener:
             try:
                 df = self.broker.get_bars(symbol)
                 if df is None or len(df) < config.EMA_TREND + 5:
+                    log.debug(
+                        "SKIP %s – not enough bars (%d, need %d)",
+                        symbol, len(df) if df is not None else 0, config.EMA_TREND + 5,
+                    )
                     continue
 
                 df = compute_all(df)
@@ -44,11 +48,19 @@ class Screener:
                 # ── Price filter ─────────────────────────────
                 price = row["close"]
                 if price < config.MIN_PRICE or price > config.MAX_PRICE:
+                    log.debug(
+                        "SKIP %s – price $%.2f outside [%.2f, %.2f]",
+                        symbol, price, config.MIN_PRICE, config.MAX_PRICE,
+                    )
                     continue
 
                 # ── Volume filter ────────────────────────────
                 avg_vol = row.get("vol_sma", 0)
                 if avg_vol < config.MIN_AVG_VOLUME:
+                    log.debug(
+                        "SKIP %s – avg_vol %.0f < MIN_AVG_VOLUME %.0f",
+                        symbol, avg_vol if avg_vol else 0, config.MIN_AVG_VOLUME,
+                    )
                     continue
 
                 candidates.append(

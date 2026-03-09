@@ -112,9 +112,9 @@ class TradeExecutor:
         closed = 0
         for pos in positions:
             symbol = pos.symbol
-            qty = int(pos.qty)
+            qty = float(pos.qty)
 
-            # PDT check – can we sell today?
+            # PDT check – can we sell today (respects day trade count)?
             if not self.pdt.can_sell_today(symbol):
                 days = self.pdt.days_held(symbol)
                 log.info(
@@ -295,6 +295,15 @@ class TradeExecutor:
 
             if qty == 0:
                 log.info("Position size = 0 for %s - skipping", symbol)
+                continue
+
+            # Alpaca minimum order value is $1 — skip if notional is too small
+            MIN_ORDER_NOTIONAL = 1.0
+            if qty * entry_price < MIN_ORDER_NOTIONAL:
+                log.info(
+                    "Skipping %s – order value $%.2f below minimum $%.2f",
+                    symbol, qty * entry_price, MIN_ORDER_NOTIONAL,
+                )
                 continue
 
             log.info(

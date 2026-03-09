@@ -61,6 +61,19 @@ def _safe_float(val, default: float = 0.0) -> float:
         return default
 
 
+def _bars_to_df(bars, symbol: str) -> "pd.DataFrame":
+    """Convert Alpaca bars to a flat OHLCV DataFrame, handling MultiIndex columns."""
+    import pandas as pd
+    df = bars.df.copy()
+    if isinstance(df.columns, pd.MultiIndex):
+        if symbol in df.columns.get_level_values(0):
+            df = df.xs(symbol, axis=1, level=0)
+        else:
+            df = df.droplevel(0, axis=1)
+    df.index = pd.to_datetime(df.index)
+    return df[["open", "high", "low", "close", "volume"]]
+
+
 def _pct(val) -> float:
     return round(_safe_float(val) * 100, 2)
 
@@ -198,9 +211,7 @@ async def get_regime():
         spy_start = (_dt.date.today() - _dt.timedelta(days=380)).isoformat()
         bars = api.get_bars("SPY", config.BAR_TIMEFRAME,
                             start=spy_start, limit=10_000)
-        spy_df = bars.df.copy()
-        spy_df.index = pd.to_datetime(spy_df.index)
-        spy_df = spy_df[["open", "high", "low", "close", "volume"]]
+        spy_df = _bars_to_df(bars, "SPY")
         spy_df = compute_all(spy_df)
 
         row       = spy_df.iloc[-1]
@@ -219,7 +230,8 @@ async def get_regime():
                 vix_start = (_dt.date.today() - _dt.timedelta(days=5)).isoformat()
                 vbars = api.get_bars(config.VIX_SYMBOL, config.BAR_TIMEFRAME,
                                      start=vix_start, limit=10_000)
-                vixy_level  = round(_safe_float(vbars.df.iloc[-1]["close"]), 2)
+                vix_df = _bars_to_df(vbars, config.VIX_SYMBOL)
+                vixy_level  = round(_safe_float(vix_df.iloc[-1]["close"]), 2)
                 long_halted = vixy_level >= config.VIX_HALT_THRESHOLD
                 vix_reduced = vixy_level >= config.VIX_REDUCE_THRESHOLD
             except Exception:
@@ -262,9 +274,7 @@ async def get_watchlist():
             try:
                 bars = api.get_bars(sym, config.BAR_TIMEFRAME,
                                     start=wl_start, limit=10_000)
-                df   = bars.df.copy()
-                df.index = pd.to_datetime(df.index)
-                df   = df[["open", "high", "low", "close", "volume"]]
+                df   = _bars_to_df(bars, sym)
                 df   = compute_all(df)
                 row  = df.iloc[-1]
 

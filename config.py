@@ -42,9 +42,9 @@ SMALL_ACCOUNT_THRESHOLD = 2_000     # below this $ → small-account rules kick 
 # Accounts under $25k are limited to 3 day trades per 5 rolling business days.
 # We set a hard cap of 0 day trades — the bot NEVER opens and closes
 # the same symbol on the same calendar day.
-MAX_DAY_TRADES_ALLOWED = 0          # hard-lock: no same-day round trips
+MAX_DAY_TRADES_ALLOWED = 3          # allow up to 3 day trades per rolling window
 PDT_LOOKBACK_DAYS = 5               # rolling window (business days)
-MIN_HOLD_CALENDAR_DAYS = 2          # minimum days to hold before selling
+MIN_HOLD_CALENDAR_DAYS = 0          # allow same-day sells (day trading enabled)
 
 # ─────────────────────────────────────────────
 # Strategy – Technical Indicators
@@ -248,7 +248,7 @@ CHECK_EXITS_MINUTES = 15      # check exit signals every N minutes
 # ─────────────────────────────────────────────
 # Logging
 # ─────────────────────────────────────────────
-LOG_LEVEL = "INFO"
+LOG_LEVEL = "DEBUG"
 LOG_FILE = "logs/trader.log"
 
 
