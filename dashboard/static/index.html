@@ -1,0 +1,3393 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="UTF-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		<title>Trader Dashboard</title>
+		<style>
+			/* ── Reset & base ─────────────────────────────────────── */
+			*,
+			*::before,
+			*::after {
+				box-sizing: border-box;
+				margin: 0;
+				padding: 0;
+			}
+
+			:root {
+				--bg: #0d1117;
+				--surface: #161b22;
+				--surface2: #1c2330;
+				--border: #30363d;
+				--text: #e6edf3;
+				--muted: #8b949e;
+				--green: #3fb950;
+				--red: #f85149;
+				--yellow: #d29922;
+				--blue: #58a6ff;
+				--purple: #bc8cff;
+				--accent: #238636;
+				--radius: 8px;
+				--font: "Inter", system-ui, -apple-system, sans-serif;
+			}
+
+			html,
+			body {
+				background: var(--bg);
+				color: var(--text);
+				font-family: var(--font);
+				font-size: 14px;
+				line-height: 1.5;
+				min-height: 100vh;
+			}
+
+			/* ── Layout ───────────────────────────────────────────── */
+			.topbar {
+				display: flex;
+				align-items: center;
+				gap: 16px;
+				padding: 12px 24px;
+				background: var(--surface);
+				border-bottom: 1px solid var(--border);
+				position: sticky;
+				top: 0;
+				z-index: 100;
+			}
+
+			.topbar .logo {
+				font-size: 16px;
+				font-weight: 700;
+				color: var(--blue);
+				letter-spacing: -0.3px;
+			}
+
+			.topbar .mode-badge {
+				font-size: 11px;
+				font-weight: 600;
+				padding: 2px 10px;
+				border-radius: 12px;
+				background: #1f3a2a;
+				color: var(--green);
+				border: 1px solid #2ea04326;
+				cursor: pointer;
+				transition:
+					opacity 0.15s,
+					box-shadow 0.15s;
+				user-select: none;
+			}
+			.topbar .mode-badge:hover {
+				opacity: 0.8;
+				box-shadow: 0 0 0 2px #2ea04340;
+			}
+
+			.topbar .mode-badge.live {
+				background: #3d1c1c;
+				color: var(--red);
+				border-color: #f8514926;
+			}
+			.topbar .mode-badge.live:hover {
+				box-shadow: 0 0 0 2px #f8514940;
+			}
+
+			/* ── Trading mode modal ────────────────────────────────── */
+			.tm-overlay {
+				display: none;
+				position: fixed;
+				inset: 0;
+				background: rgba(0, 0, 0, 0.65);
+				z-index: 1000;
+				align-items: center;
+				justify-content: center;
+			}
+			.tm-overlay.open {
+				display: flex;
+			}
+			.tm-modal {
+				background: var(--surface);
+				border: 1px solid var(--border);
+				border-radius: 12px;
+				width: 420px;
+				max-width: 95vw;
+				padding: 28px 28px 22px;
+				box-shadow: 0 8px 40px rgba(0, 0, 0, 0.5);
+				display: flex;
+				flex-direction: column;
+				gap: 16px;
+			}
+			.tm-modal h3 {
+				margin: 0;
+				font-size: 16px;
+				font-weight: 700;
+				color: var(--text);
+			}
+			.tm-modal p {
+				margin: 0;
+				font-size: 13px;
+				color: var(--muted);
+				line-height: 1.55;
+			}
+			.tm-warning {
+				background: #3d2a1c;
+				border: 1px solid #f0883e44;
+				border-radius: 8px;
+				padding: 12px 14px;
+				font-size: 12px;
+				color: #f0883e;
+				line-height: 1.5;
+			}
+			.tm-confirm-row {
+				display: flex;
+				flex-direction: column;
+				gap: 6px;
+			}
+			.tm-confirm-row label {
+				font-size: 11px;
+				color: var(--muted);
+				font-weight: 600;
+				text-transform: uppercase;
+				letter-spacing: 0.05em;
+			}
+			.tm-confirm-input {
+				background: var(--surface2);
+				border: 1px solid var(--border);
+				border-radius: 6px;
+				color: var(--text);
+				padding: 8px 12px;
+				font-size: 13px;
+				font-family: var(--font);
+				width: 100%;
+				box-sizing: border-box;
+			}
+			.tm-confirm-input:focus {
+				outline: none;
+				border-color: var(--red);
+			}
+			.tm-btn-row {
+				display: flex;
+				gap: 10px;
+				justify-content: flex-end;
+				margin-top: 4px;
+			}
+			.tm-btn-cancel {
+				background: var(--surface2);
+				border: 1px solid var(--border);
+				color: var(--text);
+				border-radius: 6px;
+				padding: 8px 18px;
+				font-size: 13px;
+				cursor: pointer;
+				font-family: var(--font);
+			}
+			.tm-btn-cancel:hover {
+				border-color: var(--muted);
+			}
+			.tm-btn-confirm {
+				border: none;
+				border-radius: 6px;
+				padding: 8px 18px;
+				font-size: 13px;
+				font-weight: 600;
+				cursor: pointer;
+				font-family: var(--font);
+				transition: opacity 0.15s;
+			}
+			.tm-btn-confirm.paper {
+				background: var(--green);
+				color: #0d1117;
+			}
+			.tm-btn-confirm.live {
+				background: var(--red);
+				color: #fff;
+			}
+			.tm-btn-confirm:disabled {
+				opacity: 0.4;
+				cursor: not-allowed;
+			}
+			.tm-status {
+				font-size: 12px;
+				min-height: 16px;
+			}
+
+			.topbar .market-status {
+				margin-left: auto;
+				display: flex;
+				align-items: center;
+				gap: 8px;
+				font-size: 12px;
+				color: var(--muted);
+			}
+
+			.status-dot {
+				width: 8px;
+				height: 8px;
+				border-radius: 50%;
+				background: var(--muted);
+				flex-shrink: 0;
+			}
+			.status-dot.open {
+				background: var(--green);
+				box-shadow: 0 0 6px var(--green);
+			}
+			.status-dot.closed {
+				background: var(--red);
+			}
+
+			.last-update {
+				font-size: 11px;
+				color: var(--muted);
+				margin-left: 8px;
+			}
+
+			.main {
+				max-width: 1400px;
+				margin: 0 auto;
+				padding: 24px 24px 48px;
+				display: flex;
+				flex-direction: column;
+				gap: 24px;
+			}
+
+			/* ── Cards ────────────────────────────────────────────── */
+			.card {
+				background: var(--surface);
+				border: 1px solid var(--border);
+				border-radius: var(--radius);
+				overflow: hidden;
+			}
+
+			.card-header {
+				padding: 14px 20px;
+				border-bottom: 1px solid var(--border);
+				display: flex;
+				align-items: center;
+				justify-content: space-between;
+				gap: 12px;
+			}
+
+			.card-title {
+				font-size: 13px;
+				font-weight: 600;
+				color: var(--text);
+				letter-spacing: 0.2px;
+			}
+
+			.card-body {
+				padding: 20px;
+			}
+
+			/* ── Stat grid (top row) ─────────────────────────────── */
+			.stat-grid {
+				display: grid;
+				grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+				gap: 16px;
+			}
+
+			.stat-card {
+				background: var(--surface2);
+				border: 1px solid var(--border);
+				border-radius: var(--radius);
+				padding: 16px 20px;
+				display: flex;
+				flex-direction: column;
+				gap: 4px;
+			}
+
+			.stat-label {
+				font-size: 11px;
+				font-weight: 500;
+				color: var(--muted);
+				text-transform: uppercase;
+				letter-spacing: 0.5px;
+			}
+
+			.stat-value {
+				font-size: 22px;
+				font-weight: 700;
+				color: var(--text);
+				letter-spacing: -0.5px;
+			}
+
+			.stat-sub {
+				font-size: 11px;
+				color: var(--muted);
+				margin-top: 2px;
+			}
+
+			.pos {
+				color: var(--green);
+			}
+			.neg {
+				color: var(--red);
+			}
+			.neu {
+				color: var(--muted);
+			}
+			.warn {
+				color: var(--yellow);
+			}
+
+			/* ── Two-column layout ───────────────────────────────── */
+			.two-col {
+				display: grid;
+				grid-template-columns: 1fr 1fr;
+				gap: 24px;
+			}
+
+			@media (max-width: 900px) {
+				.two-col {
+					grid-template-columns: 1fr;
+				}
+			}
+
+			/* ── Regime bar ──────────────────────────────────────── */
+			.regime-grid {
+				display: grid;
+				grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+				gap: 12px;
+			}
+
+			.regime-item {
+				background: var(--surface2);
+				border: 1px solid var(--border);
+				border-radius: var(--radius);
+				padding: 12px 16px;
+			}
+
+			.regime-item .label {
+				font-size: 10px;
+				font-weight: 600;
+				color: var(--muted);
+				text-transform: uppercase;
+				letter-spacing: 0.5px;
+				margin-bottom: 4px;
+			}
+
+			.regime-item .value {
+				font-size: 16px;
+				font-weight: 700;
+			}
+
+			.regime-badge {
+				display: inline-flex;
+				align-items: center;
+				gap: 6px;
+				padding: 4px 12px;
+				border-radius: 20px;
+				font-size: 13px;
+				font-weight: 700;
+			}
+
+			.regime-badge.bull {
+				background: #1f3a2a;
+				color: var(--green);
+				border: 1px solid #2ea04340;
+			}
+			.regime-badge.bear {
+				background: #3d1c1c;
+				color: var(--red);
+				border: 1px solid #f8514940;
+			}
+			.regime-badge.warn {
+				background: #3a2d0a;
+				color: var(--yellow);
+				border: 1px solid #d2992240;
+			}
+
+			/* ── VIX bar ─────────────────────────────────────────── */
+			.vix-bar-wrap {
+				display: flex;
+				align-items: center;
+				gap: 10px;
+				margin-top: 4px;
+			}
+
+			.vix-bar-track {
+				flex: 1;
+				height: 6px;
+				background: var(--surface2);
+				border-radius: 3px;
+				overflow: hidden;
+				border: 1px solid var(--border);
+			}
+
+			.vix-bar-fill {
+				height: 100%;
+				border-radius: 3px;
+				transition:
+					width 0.4s ease,
+					background 0.4s ease;
+			}
+
+			/* ── Tables ──────────────────────────────────────────── */
+			.data-table {
+				width: 100%;
+				border-collapse: collapse;
+				font-size: 13px;
+			}
+
+			.data-table th {
+				padding: 8px 12px;
+				text-align: left;
+				font-size: 11px;
+				font-weight: 600;
+				color: var(--muted);
+				text-transform: uppercase;
+				letter-spacing: 0.4px;
+				border-bottom: 1px solid var(--border);
+				white-space: nowrap;
+			}
+
+			.data-table td {
+				padding: 10px 12px;
+				border-bottom: 1px solid #21262d;
+				white-space: nowrap;
+			}
+
+			.data-table tr:last-child td {
+				border-bottom: none;
+			}
+
+			.data-table tr:hover td {
+				background: var(--surface2);
+			}
+
+			.data-table .num {
+				text-align: right;
+				font-variant-numeric: tabular-nums;
+			}
+
+			.score-pill {
+				display: inline-block;
+				padding: 2px 8px;
+				border-radius: 10px;
+				font-size: 11px;
+				font-weight: 700;
+				min-width: 28px;
+				text-align: center;
+			}
+
+			.score-high {
+				background: #1f3a2a;
+				color: var(--green);
+			}
+			.score-mid {
+				background: #3a2d0a;
+				color: var(--yellow);
+			}
+			.score-low {
+				background: #21262d;
+				color: var(--muted);
+			}
+
+			.side-buy {
+				color: var(--green);
+				font-weight: 600;
+			}
+			.side-sell {
+				color: var(--red);
+				font-weight: 600;
+			}
+
+			/* ── Equity chart ────────────────────────────────────── */
+			#equity-canvas {
+				width: 100%;
+				height: 220px;
+				display: block;
+			}
+
+			/* ── Log viewer ──────────────────────────────────────── */
+			.log-box {
+				background: #0d1117;
+				border: 1px solid var(--border);
+				border-radius: var(--radius);
+				padding: 14px 16px;
+				font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
+				font-size: 11.5px;
+				color: var(--muted);
+				height: 280px;
+				overflow-y: auto;
+				line-height: 1.7;
+				scrollbar-width: thin;
+				scrollbar-color: var(--border) transparent;
+			}
+
+			.log-box .log-info {
+				color: #8b949e;
+			}
+			.log-box .log-warn {
+				color: var(--yellow);
+			}
+			.log-box .log-error {
+				color: var(--red);
+			}
+			.log-box .log-trade {
+				color: var(--green);
+			}
+
+			/* ── Tabs ────────────────────────────────────────────── */
+			.tabs {
+				display: flex;
+				gap: 4px;
+				border-bottom: 1px solid var(--border);
+				padding: 0 20px;
+			}
+
+			.tab-btn {
+				padding: 8px 14px;
+				background: none;
+				border: none;
+				border-bottom: 2px solid transparent;
+				color: var(--muted);
+				font-size: 12px;
+				font-weight: 500;
+				cursor: pointer;
+				transition:
+					color 0.15s,
+					border-color 0.15s;
+				margin-bottom: -1px;
+			}
+
+			.tab-btn:hover {
+				color: var(--text);
+			}
+			.tab-btn.active {
+				color: var(--blue);
+				border-bottom-color: var(--blue);
+			}
+
+			.tab-panel {
+				display: none;
+			}
+			.tab-panel.active {
+				display: block;
+			}
+
+			/* ── Spinner ─────────────────────────────────────────── */
+			.spinner {
+				display: inline-block;
+				width: 14px;
+				height: 14px;
+				border: 2px solid var(--border);
+				border-top-color: var(--blue);
+				border-radius: 50%;
+				animation: spin 0.7s linear infinite;
+				vertical-align: middle;
+			}
+			@keyframes spin {
+				to {
+					transform: rotate(360deg);
+				}
+			}
+
+			.loading-row td {
+				text-align: center;
+				color: var(--muted);
+				padding: 24px !important;
+			}
+
+			/* ── Misc ────────────────────────────────────────────── */
+			.empty-state {
+				text-align: center;
+				padding: 32px;
+				color: var(--muted);
+				font-size: 13px;
+			}
+
+			.refresh-btn {
+				background: none;
+				border: 1px solid var(--border);
+				color: var(--muted);
+				border-radius: 6px;
+				padding: 4px 10px;
+				font-size: 11px;
+				cursor: pointer;
+				transition:
+					color 0.15s,
+					border-color 0.15s;
+			}
+			.refresh-btn:hover {
+				color: var(--text);
+				border-color: var(--blue);
+			}
+
+			.tag {
+				display: inline-block;
+				padding: 1px 7px;
+				border-radius: 8px;
+				font-size: 10px;
+				font-weight: 600;
+				background: var(--surface2);
+				color: var(--muted);
+				border: 1px solid var(--border);
+			}
+
+			/* ── Backtester ──────────────────────────────────────── */
+			.bt-form {
+				display: flex;
+				flex-direction: column;
+				gap: 12px;
+			}
+
+			.bt-form-row {
+				display: flex;
+				gap: 12px;
+				flex-wrap: wrap;
+				align-items: flex-end;
+			}
+
+			.bt-field {
+				display: flex;
+				flex-direction: column;
+				gap: 5px;
+				flex: 1;
+				min-width: 140px;
+			}
+
+			.bt-label {
+				font-size: 10px;
+				font-weight: 600;
+				color: var(--muted);
+				text-transform: uppercase;
+				letter-spacing: 0.4px;
+			}
+
+			.bt-input {
+				background: var(--surface2);
+				border: 1px solid var(--border);
+				border-radius: 6px;
+				padding: 7px 10px;
+				color: var(--text);
+				font-size: 13px;
+				outline: none;
+				transition: border-color 0.15s;
+				font-family: var(--font);
+				width: 100%;
+			}
+
+			.bt-input:focus {
+				border-color: var(--blue);
+			}
+
+			.bt-input[type="date"]::-webkit-calendar-picker-indicator {
+				filter: invert(0.6);
+				cursor: pointer;
+			}
+
+			.bt-preset {
+				background: var(--surface2);
+				border: 1px solid var(--border);
+				color: var(--muted);
+				border-radius: 6px;
+				padding: 6px 12px;
+				font-size: 12px;
+				cursor: pointer;
+				transition: all 0.15s;
+				font-family: var(--font);
+			}
+
+			.bt-preset:hover {
+				border-color: var(--blue);
+				color: var(--text);
+			}
+
+			.bt-preset.active {
+				border-color: var(--blue);
+				color: var(--blue);
+				background: rgba(88, 166, 255, 0.08);
+			}
+
+			.bt-run-btn {
+				background: var(--accent);
+				border: 1px solid #2ea04360;
+				color: #fff;
+				border-radius: 6px;
+				padding: 8px 20px;
+				font-size: 13px;
+				font-weight: 600;
+				cursor: pointer;
+				transition: background 0.15s;
+				font-family: var(--font);
+			}
+
+			.bt-run-btn:hover {
+				background: #2ea043;
+			}
+
+			.bt-run-btn:disabled {
+				background: var(--surface2);
+				border-color: var(--border);
+				color: var(--muted);
+				cursor: not-allowed;
+			}
+
+			.bt-reset-btn {
+				background: none;
+				border: 1px solid var(--border);
+				color: var(--muted);
+				border-radius: 6px;
+				padding: 8px 14px;
+				font-size: 12px;
+				cursor: pointer;
+				font-family: var(--font);
+				transition: all 0.15s;
+			}
+
+			.bt-reset-btn:hover {
+				border-color: var(--red);
+				color: var(--red);
+			}
+
+			.bt-progress-track {
+				height: 6px;
+				background: var(--surface2);
+				border-radius: 3px;
+				overflow: hidden;
+				border: 1px solid var(--border);
+			}
+
+			.bt-progress-fill {
+				height: 100%;
+				background: var(--blue);
+				border-radius: 3px;
+				transition: width 0.3s ease;
+			}
+
+			.bt-kpi-grid {
+				display: grid;
+				grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+				gap: 10px;
+			}
+
+			.bt-kpi {
+				background: var(--surface2);
+				border: 1px solid var(--border);
+				border-radius: var(--radius);
+				padding: 12px 14px;
+			}
+
+			.bt-kpi .label {
+				font-size: 10px;
+				font-weight: 600;
+				color: var(--muted);
+				text-transform: uppercase;
+				letter-spacing: 0.4px;
+				margin-bottom: 4px;
+			}
+
+			.bt-kpi .value {
+				font-size: 18px;
+				font-weight: 700;
+				color: var(--text);
+			}
+
+			/* ── Config panel ────────────────────────────────────── */
+			.cfg-grid {
+				padding: 20px;
+				display: grid;
+				grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+				gap: 0;
+				align-items: start;
+			}
+
+			.cfg-section-title {
+				grid-column: 1 / -1;
+				font-size: 10px;
+				font-weight: 700;
+				color: var(--muted);
+				text-transform: uppercase;
+				letter-spacing: 0.6px;
+				padding: 18px 0 8px;
+				border-bottom: 1px solid var(--border);
+				margin-bottom: 4px;
+			}
+
+			.cfg-section-title:first-child {
+				padding-top: 0;
+			}
+
+			.cfg-row {
+				display: flex;
+				align-items: center;
+				justify-content: space-between;
+				gap: 12px;
+				padding: 8px 12px 8px 0;
+				border-bottom: 1px solid #21262d;
+			}
+
+			.cfg-row:last-child {
+				border-bottom: none;
+			}
+
+			.cfg-label {
+				font-size: 12px;
+				color: var(--text);
+				flex: 1;
+				display: flex;
+				flex-direction: column;
+				gap: 2px;
+			}
+
+			.cfg-hint {
+				font-size: 10px;
+				color: var(--muted);
+				font-weight: 400;
+			}
+
+			.cfg-input {
+				background: var(--surface2);
+				border: 1px solid var(--border);
+				border-radius: 5px;
+				padding: 5px 8px;
+				color: var(--text);
+				font-size: 12px;
+				outline: none;
+				transition: border-color 0.15s;
+				font-family: var(--font);
+				width: 110px;
+				text-align: right;
+				flex-shrink: 0;
+			}
+
+			.cfg-input:focus {
+				border-color: var(--blue);
+			}
+
+			.cfg-input.changed {
+				border-color: var(--yellow);
+				color: var(--yellow);
+			}
+
+			select.cfg-input {
+				text-align: left;
+				cursor: pointer;
+			}
+
+			.cfg-reset-btn {
+				background: none;
+				border: 1px solid var(--border);
+				color: var(--muted);
+				border-radius: 6px;
+				padding: 4px 10px;
+				font-size: 11px;
+				cursor: pointer;
+				font-family: var(--font);
+				transition: all 0.15s;
+			}
+
+			.cfg-reset-btn:hover {
+				border-color: var(--red);
+				color: var(--red);
+			}
+
+			/* ── Watchlist editor ──────────────────────────────────── */
+			.wl-editor-grid {
+				display: grid;
+				grid-template-columns: 1fr 1fr;
+				gap: 24px;
+				padding: 20px 0 0;
+			}
+			@media (max-width: 760px) {
+				.wl-editor-grid {
+					grid-template-columns: 1fr;
+				}
+			}
+			.wl-editor-col {
+				display: flex;
+				flex-direction: column;
+				gap: 10px;
+			}
+			.wl-editor-header {
+				display: flex;
+				align-items: center;
+				gap: 10px;
+			}
+			.wl-count-badge {
+				background: var(--surface2);
+				color: var(--muted);
+				border-radius: 20px;
+				padding: 2px 9px;
+				font-size: 11px;
+			}
+			.wl-add-row {
+				display: flex;
+				gap: 6px;
+			}
+			.wl-sym-input {
+				flex: 1;
+				background: var(--surface2);
+				border: 1px solid var(--border);
+				border-radius: 6px;
+				color: var(--text);
+				padding: 6px 10px;
+				font-size: 13px;
+				font-family: var(--font);
+				text-transform: uppercase;
+			}
+			.wl-sym-input:focus {
+				outline: none;
+				border-color: var(--accent);
+			}
+			.wl-add-btn {
+				background: var(--accent);
+				color: #fff;
+				border: none;
+				border-radius: 6px;
+				padding: 6px 14px;
+				font-size: 13px;
+				cursor: pointer;
+				font-family: var(--font);
+				transition: opacity 0.15s;
+			}
+			.wl-add-btn:hover {
+				opacity: 0.85;
+			}
+			.wl-tag-container {
+				display: flex;
+				flex-wrap: wrap;
+				gap: 6px;
+				min-height: 60px;
+				background: var(--surface2);
+				border: 1px solid var(--border);
+				border-radius: 8px;
+				padding: 10px;
+			}
+			.wl-tag {
+				display: inline-flex;
+				align-items: center;
+				gap: 5px;
+				background: var(--surface3, #2a2d3a);
+				border: 1px solid var(--border);
+				border-radius: 5px;
+				padding: 3px 8px;
+				font-size: 12px;
+				font-weight: 600;
+				color: var(--text);
+				letter-spacing: 0.02em;
+			}
+			.wl-tag-remove {
+				background: none;
+				border: none;
+				color: var(--muted);
+				cursor: pointer;
+				font-size: 14px;
+				line-height: 1;
+				padding: 0;
+				transition: color 0.15s;
+			}
+			.wl-tag-remove:hover {
+				color: var(--red);
+			}
+			.wl-loading {
+				color: var(--muted);
+				font-size: 12px;
+			}
+			.wl-reset-btn {
+				align-self: flex-start;
+				background: none;
+				border: 1px solid var(--border);
+				color: var(--muted);
+				border-radius: 6px;
+				padding: 4px 10px;
+				font-size: 11px;
+				cursor: pointer;
+				font-family: var(--font);
+				transition: all 0.15s;
+			}
+			.wl-reset-btn:hover {
+				border-color: var(--red);
+				color: var(--red);
+			}
+
+			/* ── Bot control panel ─────────────────────────────────── */
+			.bot-control-grid {
+				display: grid;
+				grid-template-columns: 1fr 1fr;
+				gap: 16px;
+				padding: 16px 20px 20px;
+			}
+			@media (max-width: 700px) {
+				.bot-control-grid {
+					grid-template-columns: 1fr;
+				}
+			}
+
+			.bot-panel {
+				background: var(--surface2);
+				border: 1px solid var(--border);
+				border-radius: 10px;
+				padding: 16px 18px;
+				display: flex;
+				flex-direction: column;
+				gap: 12px;
+			}
+			.bot-panel.live-panel {
+				border-color: #f8514926;
+			}
+			.bot-panel-header {
+				display: flex;
+				align-items: center;
+				justify-content: space-between;
+				gap: 10px;
+			}
+			.bot-panel-title {
+				font-size: 13px;
+				font-weight: 700;
+				letter-spacing: 0.03em;
+				color: var(--text);
+				display: flex;
+				align-items: center;
+				gap: 8px;
+			}
+			.bot-status-dot {
+				width: 9px;
+				height: 9px;
+				border-radius: 50%;
+				background: var(--muted);
+				flex-shrink: 0;
+				transition: background 0.3s;
+			}
+			.bot-status-dot.running {
+				background: var(--green);
+				box-shadow: 0 0 7px var(--green);
+				animation: pulse-dot 2s infinite;
+			}
+			@keyframes pulse-dot {
+				0%,
+				100% {
+					opacity: 1;
+				}
+				50% {
+					opacity: 0.5;
+				}
+			}
+			.bot-status-text {
+				font-size: 11px;
+				color: var(--muted);
+			}
+			.bot-status-text.running {
+				color: var(--green);
+			}
+			.bot-status-text.stopped {
+				color: var(--muted);
+			}
+			.bot-start-btn {
+				background: var(--green);
+				color: #0d1117;
+				border: none;
+				border-radius: 7px;
+				padding: 7px 16px;
+				font-size: 12px;
+				font-weight: 700;
+				cursor: pointer;
+				font-family: var(--font);
+				transition: opacity 0.15s;
+				white-space: nowrap;
+			}
+			.bot-start-btn:hover {
+				opacity: 0.82;
+			}
+			.bot-start-btn:disabled {
+				opacity: 0.35;
+				cursor: not-allowed;
+			}
+			.bot-stop-btn {
+				background: #3d1c1c;
+				color: var(--red);
+				border: 1px solid #f8514930;
+				border-radius: 7px;
+				padding: 7px 16px;
+				font-size: 12px;
+				font-weight: 700;
+				cursor: pointer;
+				font-family: var(--font);
+				transition: opacity 0.15s;
+				white-space: nowrap;
+			}
+			.bot-stop-btn:hover {
+				opacity: 0.82;
+			}
+			.bot-meta {
+				display: flex;
+				gap: 18px;
+				flex-wrap: wrap;
+			}
+			.bot-meta-item {
+				display: flex;
+				flex-direction: column;
+				gap: 2px;
+			}
+			.bot-meta-label {
+				font-size: 10px;
+				text-transform: uppercase;
+				letter-spacing: 0.06em;
+				color: var(--muted);
+			}
+			.bot-meta-value {
+				font-size: 12px;
+				font-weight: 600;
+				color: var(--text);
+			}
+			.bot-log-box {
+				background: #0d1117;
+				border: 1px solid var(--border);
+				border-radius: 6px;
+				font-family: "SF Mono", "Fira Code", "Consolas", monospace;
+				font-size: 11px;
+				color: #8b949e;
+				padding: 8px 10px;
+				height: 120px;
+				overflow-y: auto;
+				line-height: 1.5;
+				white-space: pre-wrap;
+				word-break: break-all;
+			}
+			.bot-log-box .log-line-err {
+				color: var(--red);
+			}
+			.bot-log-box .log-line-warn {
+				color: var(--yellow);
+			}
+			.bot-log-box .log-line-ok {
+				color: var(--green);
+			}
+		</style>
+	</head>
+	<body>
+		<!-- ── Top bar ──────────────────────────────────────────── -->
+		<div class="topbar">
+			<span class="logo">⚡ Trader</span>
+			<span class="mode-badge" id="mode-badge" onclick="openTradingModeModal()" title="Click to switch trading mode">PAPER</span>
+			<div class="market-status">
+				<span class="status-dot" id="market-dot"></span>
+				<span id="market-label">Checking…</span>
+				<span class="last-update" id="last-update"></span>
+			</div>
+		</div>
+
+		<!-- ── Trading Mode Modal ────────────────────────────────── -->
+		<div class="tm-overlay" id="tm-overlay" onclick="if (event.target === this) closeTradingModeModal();">
+			<div class="tm-modal" id="tm-modal">
+				<h3 id="tm-title">Switch Trading Mode</h3>
+				<p id="tm-desc"></p>
+				<div class="tm-warning" id="tm-warning" style="display: none"></div>
+				<div class="tm-confirm-row" id="tm-confirm-row" style="display: none">
+					<label>Type <strong>CONFIRM</strong> to proceed</label>
+					<input
+						type="text"
+						class="tm-confirm-input"
+						id="tm-confirm-input"
+						placeholder="CONFIRM"
+						autocomplete="off"
+						oninput="tmCheckConfirm()"
+					/>
+				</div>
+				<div class="tm-btn-row">
+					<span class="tm-status" id="tm-modal-status"></span>
+					<button class="tm-btn-cancel" onclick="closeTradingModeModal()">Cancel</button>
+					<button class="tm-btn-confirm" id="tm-btn-confirm" onclick="doSwitchMode()">Switch</button>
+				</div>
+			</div>
+		</div>
+
+		<!-- ── Main content ─────────────────────────────────────── -->
+		<div class="main">
+			<!-- Row 1: Key stats ─────────────────────────────────── -->
+			<div class="stat-grid" id="stat-grid">
+				<div class="stat-card">
+					<div class="stat-label">Portfolio Value</div>
+					<div class="stat-value" id="stat-equity"><span class="spinner"></span></div>
+					<div class="stat-sub" id="stat-equity-sub"></div>
+				</div>
+				<div class="stat-card">
+					<div class="stat-label">Cash Available</div>
+					<div class="stat-value" id="stat-cash">—</div>
+					<div class="stat-sub" id="stat-cash-sub"></div>
+				</div>
+				<div class="stat-card">
+					<div class="stat-label">Today's P&L</div>
+					<div class="stat-value" id="stat-daypnl">—</div>
+					<div class="stat-sub" id="stat-daypnl-sub"></div>
+				</div>
+				<div class="stat-card">
+					<div class="stat-label">Open Positions</div>
+					<div class="stat-value" id="stat-positions">—</div>
+					<div class="stat-sub" id="stat-positions-sub"></div>
+				</div>
+				<div class="stat-card">
+					<div class="stat-label">Day Trades Used</div>
+					<div class="stat-value" id="stat-daytrades">—</div>
+					<div class="stat-sub">PDT limit: 3 per 5 days</div>
+				</div>
+			</div>
+
+			<!-- Bot Control ───────────────────────────────────────── -->
+			<div class="card" id="bot-control-card">
+				<div class="card-header">
+					<span class="card-title">🤖 Bot Control</span>
+					<button class="refresh-btn" onclick="loadBotStatus()">↻ Refresh</button>
+				</div>
+				<div class="bot-control-grid">
+					<!-- Paper bot -->
+					<div class="bot-panel" id="bot-panel-paper">
+						<div class="bot-panel-header">
+							<div class="bot-panel-title">
+								<span class="bot-status-dot" id="bot-dot-paper"></span>
+								Paper Trading Bot
+							</div>
+							<div style="display: flex; gap: 8px; align-items: center">
+								<button class="bot-start-btn" id="bot-start-paper" onclick="startBot('paper')">▶ Start</button>
+								<button class="bot-stop-btn" id="bot-stop-paper" onclick="stopBot('paper')" style="display: none">■ Stop</button>
+							</div>
+						</div>
+						<div class="bot-meta" id="bot-meta-paper">
+							<div class="bot-meta-item">
+								<span class="bot-meta-label">Status</span>
+								<span class="bot-meta-value bot-status-text stopped" id="bot-status-paper">Stopped</span>
+							</div>
+							<div class="bot-meta-item">
+								<span class="bot-meta-label">PID</span>
+								<span class="bot-meta-value" id="bot-pid-paper">—</span>
+							</div>
+							<div class="bot-meta-item">
+								<span class="bot-meta-label">Uptime</span>
+								<span class="bot-meta-value" id="bot-uptime-paper">—</span>
+							</div>
+						</div>
+						<div class="bot-log-box" id="bot-log-paper"></div>
+					</div>
+
+					<!-- Live bot -->
+					<div class="bot-panel live-panel" id="bot-panel-live">
+						<div class="bot-panel-header">
+							<div class="bot-panel-title">
+								<span class="bot-status-dot" id="bot-dot-live"></span>
+								<span style="color: var(--red)">Live</span> Trading Bot
+							</div>
+							<div style="display: flex; gap: 8px; align-items: center">
+								<button
+									class="bot-start-btn"
+									id="bot-start-live"
+									onclick="startBot('live')"
+									style="background: var(--red); color: #fff"
+									title="Starts bot with real money"
+								>
+									▶ Start LIVE
+								</button>
+								<button class="bot-stop-btn" id="bot-stop-live" onclick="stopBot('live')" style="display: none">■ Stop</button>
+							</div>
+						</div>
+						<div class="bot-meta" id="bot-meta-live">
+							<div class="bot-meta-item">
+								<span class="bot-meta-label">Status</span>
+								<span class="bot-meta-value bot-status-text stopped" id="bot-status-live">Stopped</span>
+							</div>
+							<div class="bot-meta-item">
+								<span class="bot-meta-label">PID</span>
+								<span class="bot-meta-value" id="bot-pid-live">—</span>
+							</div>
+							<div class="bot-meta-item">
+								<span class="bot-meta-label">Uptime</span>
+								<span class="bot-meta-value" id="bot-uptime-live">—</span>
+							</div>
+						</div>
+						<div class="bot-log-box" id="bot-log-live"></div>
+					</div>
+				</div>
+			</div>
+
+			<!-- Row 2: Regime ─────────────────────────────────────── -->
+			<div class="card">
+				<div class="card-header">
+					<span class="card-title">Market Regime</span>
+					<button class="refresh-btn" onclick="loadRegime()">↻ Refresh</button>
+				</div>
+				<div class="card-body">
+					<div class="regime-grid" id="regime-grid">
+						<div class="regime-item">
+							<div class="label">Market</div>
+							<div class="value" id="regime-label"><span class="spinner"></span></div>
+						</div>
+						<div class="regime-item">
+							<div class="label">SPY Close</div>
+							<div class="value" id="regime-spy">—</div>
+						</div>
+						<div class="regime-item">
+							<div class="label">SMA-200</div>
+							<div class="value" id="regime-sma">—</div>
+						</div>
+						<div class="regime-item">
+							<div class="label">Distance</div>
+							<div class="value" id="regime-dist">—</div>
+						</div>
+						<div class="regime-item">
+							<div class="label">VIXY Level</div>
+							<div class="value" id="regime-vixy">—</div>
+							<div id="vix-bar-wrap" class="vix-bar-wrap" style="margin-top: 8px">
+								<div class="vix-bar-track">
+									<div class="vix-bar-fill" id="vix-bar" style="width: 0%; background: var(--green)"></div>
+								</div>
+								<span id="vix-bar-label" style="font-size: 10px; color: var(--muted); white-space: nowrap"></span>
+							</div>
+						</div>
+						<div class="regime-item">
+							<div class="label">Entries</div>
+							<div class="value" id="regime-entries">—</div>
+						</div>
+					</div>
+				</div>
+			</div>
+
+			<!-- Row 3: Equity chart + Positions ──────────────────── -->
+			<div class="two-col">
+				<!-- Equity curve -->
+				<div class="card">
+					<div class="card-header">
+						<span class="card-title">Equity Curve (30 days)</span>
+						<button class="refresh-btn" onclick="loadEquityHistory()">↻ Refresh</button>
+					</div>
+					<div class="card-body" style="padding: 16px 20px">
+						<canvas id="equity-canvas"></canvas>
+					</div>
+				</div>
+
+				<!-- Open positions -->
+				<div class="card">
+					<div class="card-header">
+						<span class="card-title">Open Positions</span>
+						<button class="refresh-btn" onclick="loadPositions()">↻ Refresh</button>
+					</div>
+					<div style="overflow-x: auto">
+						<table class="data-table">
+							<thead>
+								<tr>
+									<th>Symbol</th>
+									<th class="num">Qty</th>
+									<th class="num">Entry</th>
+									<th class="num">Current</th>
+									<th class="num">P&L</th>
+									<th class="num">P&L%</th>
+								</tr>
+							</thead>
+							<tbody id="positions-tbody">
+								<tr class="loading-row">
+									<td colspan="6"><span class="spinner"></span> Loading…</td>
+								</tr>
+							</tbody>
+						</table>
+					</div>
+				</div>
+			</div>
+
+			<!-- Row 4: Watchlist + Trade history ─────────────────── -->
+			<div class="two-col">
+				<!-- Watchlist signal scores -->
+				<div class="card">
+					<div class="card-header">
+						<span class="card-title">Watchlist Signals</span>
+						<button class="refresh-btn" onclick="loadWatchlist()">↻ Refresh</button>
+					</div>
+					<div style="overflow-x: auto; max-height: 380px; overflow-y: auto">
+						<table class="data-table">
+							<thead>
+								<tr>
+									<th>Symbol</th>
+									<th class="num">Price</th>
+									<th class="num">RSI</th>
+									<th class="num">ADX</th>
+									<th class="num">Vol×</th>
+									<th class="num">Score</th>
+								</tr>
+							</thead>
+							<tbody id="watchlist-tbody">
+								<tr class="loading-row">
+									<td colspan="6"><span class="spinner"></span> Loading…</td>
+								</tr>
+							</tbody>
+						</table>
+					</div>
+				</div>
+
+				<!-- Trade history -->
+				<div class="card">
+					<div class="card-header">
+						<span class="card-title">Recent Orders</span>
+						<button class="refresh-btn" onclick="loadOrders()">↻ Refresh</button>
+					</div>
+					<div style="overflow-x: auto; max-height: 380px; overflow-y: auto">
+						<table class="data-table">
+							<thead>
+								<tr>
+									<th>Symbol</th>
+									<th>Side</th>
+									<th class="num">Qty</th>
+									<th class="num">Price</th>
+									<th>Filled</th>
+									<th>Type</th>
+								</tr>
+							</thead>
+							<tbody id="orders-tbody">
+								<tr class="loading-row">
+									<td colspan="6"><span class="spinner"></span> Loading…</td>
+								</tr>
+							</tbody>
+						</table>
+					</div>
+				</div>
+			</div>
+
+			<!-- Row 5: Log viewer ─────────────────────────────────── -->
+			<div class="card">
+				<div class="card-header">
+					<span class="card-title">Bot Log</span>
+					<div style="display: flex; gap: 8px; align-items: center">
+						<label style="font-size: 11px; color: var(--muted); display: flex; align-items: center; gap: 6px; cursor: pointer">
+							<input type="checkbox" id="log-autoscroll" checked style="accent-color: var(--blue)" />
+							Auto-scroll
+						</label>
+						<button class="refresh-btn" onclick="loadLogs()">↻ Refresh</button>
+					</div>
+				</div>
+				<div class="log-box" id="log-box">Loading…</div>
+			</div>
+
+			<!-- Row 6: Algorithm Config ──────────────────────────── -->
+			<div class="card" id="config-card">
+				<div class="card-header">
+					<span class="card-title">⚙ Algorithm Configuration</span>
+					<div style="display: flex; gap: 8px; align-items: center">
+						<span id="cfg-save-status" style="font-size: 11px; color: var(--muted)"></span>
+						<button class="refresh-btn" onclick="loadConfig()">↻ Reload</button>
+						<button class="cfg-reset-btn" onclick="resetConfig()">Reset to Defaults</button>
+					</div>
+				</div>
+				<div class="card-body" style="padding: 0">
+					<!-- Tab bar -->
+					<div class="tabs" id="cfg-tabs">
+						<button class="tab-btn active" data-tab="cfg-indicators">Indicators</button>
+						<button class="tab-btn" data-tab="cfg-entry">Entry Scoring</button>
+						<button class="tab-btn" data-tab="cfg-exit">Exit &amp; Hold</button>
+						<button class="tab-btn" data-tab="cfg-risk">Risk</button>
+						<button class="tab-btn" data-tab="cfg-regime">Regime &amp; VIX</button>
+						<button class="tab-btn" data-tab="cfg-universe">Universe</button>
+					</div>
+
+					<!-- Tab: Indicators -->
+					<div class="tab-panel active" id="cfg-indicators">
+						<div class="cfg-grid">
+							<div class="cfg-section-title">EMA Periods</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Fast EMA<span class="cfg-hint">Short momentum</span></label
+								><input type="number" class="cfg-input" data-key="EMA_FAST" min="3" max="30" step="1" />
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Slow EMA<span class="cfg-hint">Crossover baseline</span></label
+								><input type="number" class="cfg-input" data-key="EMA_SLOW" min="10" max="60" step="1" />
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Trend EMA<span class="cfg-hint">Long-term trend filter</span></label
+								><input type="number" class="cfg-input" data-key="EMA_TREND" min="20" max="100" step="1" />
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Long EMA<span class="cfg-hint">Regime / super-trend</span></label
+								><input type="number" class="cfg-input" data-key="EMA_LONG" min="100" max="400" step="10" />
+							</div>
+							<div class="cfg-section-title">RSI</div>
+							<div class="cfg-row">
+								<label class="cfg-label">RSI Period<span class="cfg-hint">Default 14</span></label
+								><input type="number" class="cfg-input" data-key="RSI_PERIOD" min="5" max="30" step="1" />
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Oversold<span class="cfg-hint">Buy zone ≤ N</span></label
+								><input type="number" class="cfg-input" data-key="RSI_OVERSOLD" min="10" max="50" step="1" />
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Overbought<span class="cfg-hint">Sell zone ≥ N</span></label
+								><input type="number" class="cfg-input" data-key="RSI_OVERBOUGHT" min="60" max="95" step="1" />
+							</div>
+							<div class="cfg-section-title">MACD</div>
+							<div class="cfg-row">
+								<label class="cfg-label">MACD Fast<span class="cfg-hint">Default 12</span></label
+								><input type="number" class="cfg-input" data-key="MACD_FAST" min="5" max="30" step="1" />
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">MACD Slow<span class="cfg-hint">Default 26</span></label
+								><input type="number" class="cfg-input" data-key="MACD_SLOW" min="15" max="60" step="1" />
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">MACD Signal<span class="cfg-hint">Default 9</span></label
+								><input type="number" class="cfg-input" data-key="MACD_SIGNAL" min="3" max="20" step="1" />
+							</div>
+							<div class="cfg-section-title">ATR (Stops &amp; Targets)</div>
+							<div class="cfg-row">
+								<label class="cfg-label">ATR Period<span class="cfg-hint">Default 14</span></label
+								><input type="number" class="cfg-input" data-key="ATR_PERIOD" min="5" max="30" step="1" />
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Stop Multiplier<span class="cfg-hint">Entry − ATR × N</span></label
+								><input type="number" class="cfg-input" data-key="ATR_STOP_MULTIPLIER" min="1" max="6" step="0.5" />
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Profit Multiplier<span class="cfg-hint">Target = Entry + ATR × N</span></label
+								><input type="number" class="cfg-input" data-key="ATR_PROFIT_MULTIPLIER" min="2" max="15" step="0.5" />
+							</div>
+							<div class="cfg-section-title">Volume</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Volume SMA Period</label
+								><input type="number" class="cfg-input" data-key="VOLUME_SMA_PERIOD" min="5" max="50" step="1" />
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Volume Surge Factor<span class="cfg-hint">1.0 = any volume ok</span></label
+								><input type="number" class="cfg-input" data-key="VOLUME_SURGE_FACTOR" min="0.5" max="3" step="0.1" />
+							</div>
+						</div>
+					</div>
+
+					<!-- Tab: Entry Scoring -->
+					<div class="tab-panel" id="cfg-entry">
+						<div class="cfg-grid">
+							<div class="cfg-section-title">Scoring</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Score Threshold<span class="cfg-hint">Min score to open position</span></label
+								><input type="number" class="cfg-input" data-key="ENTRY_SCORE_THRESHOLD" min="2" max="14" step="1" />
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Dynamic Threshold<span class="cfg-hint">Adjust bar by market quality</span></label
+								><select class="cfg-input" data-key="DYNAMIC_THRESHOLD_ENABLED">
+									<option value="true">Enabled</option>
+									<option value="false">Disabled</option>
+								</select>
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Dynamic Adjustment<span class="cfg-hint">±N in strong/weak market</span></label
+								><input type="number" class="cfg-input" data-key="DYNAMIC_THRESHOLD_ADJUSTMENT" min="1" max="3" step="1" />
+							</div>
+							<div class="cfg-section-title">Momentum</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Momentum Lookback<span class="cfg-hint">Days for rate-of-change</span></label
+								><input type="number" class="cfg-input" data-key="MOMENTUM_LOOKBACK" min="5" max="60" step="1" />
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Momentum Top %<span class="cfg-hint">Only top N% by momentum</span></label
+								><input type="number" class="cfg-input" data-key="MOMENTUM_TOP_PCT" min="0.1" max="1" step="0.05" />
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Momentum Score Bonus<span class="cfg-hint">Extra points for top quartile</span></label
+								><input type="number" class="cfg-input" data-key="MOMENTUM_SCORE_WEIGHT" min="0" max="5" step="1" />
+							</div>
+							<div class="cfg-section-title">Filters</div>
+							<div class="cfg-row">
+								<label class="cfg-label">EMA Slope Period<span class="cfg-hint">Bars to measure EMA-50 slope</span></label
+								><input type="number" class="cfg-input" data-key="EMA_SLOPE_PERIOD" min="2" max="20" step="1" />
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Max Gap Up %<span class="cfg-hint">Skip if gapped up > N%</span></label
+								><input type="number" class="cfg-input" data-key="GAP_UP_MAX_PCT" min="0.01" max="0.3" step="0.01" />
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">S/R Lookback<span class="cfg-hint">Bars for swing high/low</span></label
+								><input type="number" class="cfg-input" data-key="SR_LOOKBACK" min="5" max="50" step="1" />
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Resistance Buffer %<span class="cfg-hint">Penalise entries near resistance</span></label
+								><input type="number" class="cfg-input" data-key="SR_RESISTANCE_BUFFER" min="0" max="0.05" step="0.005" />
+							</div>
+							<div class="cfg-section-title">Multi-Timeframe</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Weekly Trend Filter<span class="cfg-hint">Require weekly uptrend</span></label
+								><select class="cfg-input" data-key="WEEKLY_TREND_ENABLED">
+									<option value="true">Enabled</option>
+									<option value="false">Disabled</option>
+								</select>
+							</div>
+						</div>
+					</div>
+
+					<!-- Tab: Exit & Hold -->
+					<div class="tab-panel" id="cfg-exit">
+						<div class="cfg-grid">
+							<div class="cfg-section-title">Trailing Stops</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Activate at Gain %<span class="cfg-hint">Start trailing after N% profit</span></label
+								><input type="number" class="cfg-input" data-key="TRAILING_STOP_ACTIVATE_PCT" min="0.02" max="0.2" step="0.01" />
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Trail %<span class="cfg-hint">Trail by N% once active</span></label
+								><input type="number" class="cfg-input" data-key="TRAILING_STOP_PCT" min="0.01" max="0.15" step="0.005" />
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Tight Activate at Gain %<span class="cfg-hint">Tighten trail above N%</span></label
+								><input type="number" class="cfg-input" data-key="TRAILING_STOP_TIGHT_ACTIVATE" min="0.05" max="0.4" step="0.01" />
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Tight Trail %<span class="cfg-hint">Tighter trail %</span></label
+								><input type="number" class="cfg-input" data-key="TRAILING_STOP_TIGHT_PCT" min="0.01" max="0.1" step="0.005" />
+							</div>
+							<div class="cfg-section-title">Dead-Money Exit</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Dead Money Days<span class="cfg-hint">Exit if flat after N days</span></label
+								><input type="number" class="cfg-input" data-key="DEAD_MONEY_DAYS" min="3" max="30" step="1" />
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Dead Money Threshold %<span class="cfg-hint">Exit if move < N% in that window</span></label
+								><input type="number" class="cfg-input" data-key="DEAD_MONEY_THRESHOLD" min="0.005" max="0.1" step="0.005" />
+							</div>
+							<div class="cfg-section-title">Re-entry / Hold Rules</div>
+							<div class="cfg-row">
+								<label class="cfg-label"
+									>Re-entry Cooldown Days<span class="cfg-hint">Don't re-enter symbol within N days</span></label
+								><input type="number" class="cfg-input" data-key="RE_ENTRY_COOLDOWN_DAYS" min="0" max="30" step="1" />
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Min Hold Calendar Days<span class="cfg-hint">PDT guard — hold at least N days</span></label
+								><input type="number" class="cfg-input" data-key="MIN_HOLD_CALENDAR_DAYS" min="1" max="10" step="1" />
+							</div>
+						</div>
+					</div>
+
+					<!-- Tab: Risk -->
+					<div class="tab-panel" id="cfg-risk">
+						<div class="cfg-grid">
+							<div class="cfg-section-title">Position Limits</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Max Open Positions</label
+								><input type="number" class="cfg-input" data-key="MAX_OPEN_POSITIONS" min="1" max="50" step="1" />
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Max Position % of Equity</label
+								><input type="number" class="cfg-input" data-key="MAX_POSITION_PCT" min="0.02" max="1" step="0.01" />
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Max Portfolio Risk %</label
+								><input type="number" class="cfg-input" data-key="MAX_PORTFOLIO_RISK_PCT" min="0.01" max="0.2" step="0.01" />
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Max Loss Per Trade %</label
+								><input type="number" class="cfg-input" data-key="MAX_LOSS_PER_TRADE_PCT" min="0.005" max="0.1" step="0.005" />
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Max Portfolio Exposure %</label
+								><input type="number" class="cfg-input" data-key="MAX_PORTFOLIO_EXPOSURE_PCT" min="0.5" max="1" step="0.01" />
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Max Sector Positions</label
+								><input type="number" class="cfg-input" data-key="MAX_PER_SECTOR" min="1" max="99" step="1" />
+							</div>
+							<div class="cfg-section-title">Small Account (equity &lt; threshold)</div>
+							<div class="cfg-row">
+								<label class="cfg-label"
+									>Small Account Threshold $<span class="cfg-hint">Below this = small-account rules</span></label
+								><input type="number" class="cfg-input" data-key="SMALL_ACCOUNT_THRESHOLD" min="100" max="50000" step="100" />
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Fractional Shares<span class="cfg-hint">Use fractional positions</span></label
+								><select class="cfg-input" data-key="FRACTIONAL_SHARES">
+									<option value="true">Enabled</option>
+									<option value="false">Disabled</option>
+								</select>
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Small Max Positions</label
+								><input type="number" class="cfg-input" data-key="SMALL_MAX_OPEN_POSITIONS" min="1" max="10" step="1" />
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Small Max Position %</label
+								><input type="number" class="cfg-input" data-key="SMALL_MAX_POSITION_PCT" min="0.05" max="1" step="0.05" />
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Small Max Loss/Trade %</label
+								><input type="number" class="cfg-input" data-key="SMALL_MAX_LOSS_PER_TRADE_PCT" min="0.005" max="0.1" step="0.005" />
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Small ATR Stop Mult</label
+								><input type="number" class="cfg-input" data-key="SMALL_ATR_STOP_MULTIPLIER" min="0.5" max="5" step="0.5" />
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Small ATR Profit Mult</label
+								><input type="number" class="cfg-input" data-key="SMALL_ATR_PROFIT_MULTIPLIER" min="1" max="10" step="0.5" />
+							</div>
+							<div class="cfg-section-title">PDT Guard</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Max Day Trades Allowed</label
+								><input type="number" class="cfg-input" data-key="MAX_DAY_TRADES_ALLOWED" min="0" max="3" step="1" />
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">PDT Lookback Days</label
+								><input type="number" class="cfg-input" data-key="PDT_LOOKBACK_DAYS" min="3" max="10" step="1" />
+							</div>
+						</div>
+					</div>
+
+					<!-- Tab: Regime & VIX -->
+					<div class="tab-panel" id="cfg-regime">
+						<div class="cfg-grid">
+							<div class="cfg-section-title">Market Regime (SPY SMA-200)</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Regime Filter<span class="cfg-hint">Block longs in bear market</span></label
+								><select class="cfg-input" data-key="MARKET_REGIME_ENABLED">
+									<option value="true">Enabled</option>
+									<option value="false">Disabled</option>
+								</select>
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Regime Symbol<span class="cfg-hint">Default SPY</span></label
+								><input type="text" class="cfg-input" data-key="MARKET_REGIME_SYMBOL" />
+							</div>
+							<div class="cfg-section-title">VIX Fear Filter (VIXY)</div>
+							<div class="cfg-row">
+								<label class="cfg-label">VIX Filter<span class="cfg-hint">Halt / reduce on high volatility</span></label
+								><select class="cfg-input" data-key="VIX_FILTER_ENABLED">
+									<option value="true">Enabled</option>
+									<option value="false">Disabled</option>
+								</select>
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">VIX Symbol<span class="cfg-hint">Alpaca proxy, default VIXY</span></label
+								><input type="text" class="cfg-input" data-key="VIX_SYMBOL" />
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Halt Threshold<span class="cfg-hint">VIXY ≥ N → stop all new longs</span></label
+								><input type="number" class="cfg-input" data-key="VIX_HALT_THRESHOLD" min="20" max="80" step="1" />
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Reduce Threshold<span class="cfg-hint">VIXY ≥ N → cut size</span></label
+								><input type="number" class="cfg-input" data-key="VIX_REDUCE_THRESHOLD" min="10" max="60" step="1" />
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">VIX Size Scale<span class="cfg-hint">Position size when reduced</span></label
+								><input type="number" class="cfg-input" data-key="VIX_SIZE_SCALE" min="0.1" max="1" step="0.05" />
+							</div>
+							<div class="cfg-section-title">Volatility Regime</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Vol Regime Sizing<span class="cfg-hint">Adapt size to realised vol</span></label
+								><select class="cfg-input" data-key="VOL_REGIME_ENABLED">
+									<option value="true">Enabled</option>
+									<option value="false">Disabled</option>
+								</select>
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Vol Window Days</label
+								><input type="number" class="cfg-input" data-key="REALIZED_VOL_WINDOW" min="5" max="60" step="1" />
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">High Vol Threshold<span class="cfg-hint">Ann. vol above N = high</span></label
+								><input type="number" class="cfg-input" data-key="HIGH_VOL_THRESHOLD" min="0.1" max="0.8" step="0.05" />
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Low Vol Threshold<span class="cfg-hint">Ann. vol below N = low</span></label
+								><input type="number" class="cfg-input" data-key="LOW_VOL_THRESHOLD" min="0.05" max="0.3" step="0.01" />
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">High Vol Size Scale</label
+								><input type="number" class="cfg-input" data-key="HIGH_VOL_SIZE_SCALE" min="0.3" max="1" step="0.05" />
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Low Vol Size Scale</label
+								><input type="number" class="cfg-input" data-key="LOW_VOL_SIZE_SCALE" min="1" max="1.5" step="0.05" />
+							</div>
+							<div class="cfg-section-title">Inverse ETF Bear Mode</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Inverse ETF Mode<span class="cfg-hint">Trade inverse ETFs in bear market</span></label
+								><select class="cfg-input" data-key="INVERSE_ETF_MODE_ENABLED">
+									<option value="true">Enabled</option>
+									<option value="false">Disabled</option>
+								</select>
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Inverse ETF Size Scale<span class="cfg-hint">Fraction of normal size</span></label
+								><input type="number" class="cfg-input" data-key="INVERSE_ETF_SIZE_SCALE" min="0.1" max="1" step="0.05" />
+							</div>
+						</div>
+					</div>
+
+					<!-- Tab: Universe -->
+					<div class="tab-panel" id="cfg-universe">
+						<div class="cfg-grid">
+							<div class="cfg-section-title">Screener Filters</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Min Price $<span class="cfg-hint">Skip stocks below this price</span></label
+								><input type="number" class="cfg-input" data-key="MIN_PRICE" min="0.5" max="50" step="0.5" />
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Max Price $<span class="cfg-hint">Skip stocks above this price</span></label
+								><input type="number" class="cfg-input" data-key="MAX_PRICE" min="50" max="10000" step="50" />
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Min Avg Volume<span class="cfg-hint">Skip illiquid names</span></label
+								><input type="number" class="cfg-input" data-key="MIN_AVG_VOLUME" min="50000" max="10000000" step="50000" />
+							</div>
+							<div class="cfg-section-title">Scheduling</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Scan Interval (min)<span class="cfg-hint">Re-scan for entries every N min</span></label
+								><input type="number" class="cfg-input" data-key="SCAN_INTERVAL_MINUTES" min="5" max="120" step="5" />
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Check Exits (min)<span class="cfg-hint">Check exit signals every N min</span></label
+								><input type="number" class="cfg-input" data-key="CHECK_EXITS_MINUTES" min="5" max="60" step="5" />
+							</div>
+						</div>
+
+						<!-- Watchlist Editor ──────────────────────── -->
+						<div style="padding: 0 20px 20px">
+							<div class="wl-editor-grid">
+								<!-- Main Watchlist -->
+								<div class="wl-editor-col">
+									<div class="wl-editor-header">
+										<span class="cfg-section-title" style="margin: 0">📋 Main Watchlist</span>
+										<span id="wl-count" class="wl-count-badge">0 symbols</span>
+									</div>
+									<div class="wl-add-row">
+										<input type="text" id="wl-add-input" class="wl-sym-input" placeholder="e.g. TSLA" maxlength="10" />
+										<button class="wl-add-btn" onclick="wlAdd('watchlist')">+ Add</button>
+									</div>
+									<div class="wl-tag-container" id="wl-tags">
+										<span class="wl-loading">Loading…</span>
+									</div>
+									<button class="wl-reset-btn" onclick="wlReset()">↺ Reset to config.py defaults</button>
+								</div>
+
+								<!-- Inverse Watchlist -->
+								<div class="wl-editor-col">
+									<div class="wl-editor-header">
+										<span class="cfg-section-title" style="margin: 0">📋 Inverse ETF Watchlist</span>
+										<span id="iwl-count" class="wl-count-badge">0 symbols</span>
+									</div>
+									<div class="wl-add-row">
+										<input type="text" id="iwl-add-input" class="wl-sym-input" placeholder="e.g. SQQQ" maxlength="10" />
+										<button class="wl-add-btn" onclick="wlAdd('inverse_watchlist')">+ Add</button>
+									</div>
+									<div class="wl-tag-container" id="iwl-tags">
+										<span class="wl-loading">Loading…</span>
+									</div>
+									<div style="font-size: 11px; color: var(--muted); margin-top: 8px">
+										Used in bear-market mode when SPY is below SMA-200.
+									</div>
+								</div>
+							</div>
+							<div id="wl-status" style="height: 18px; font-size: 11px; margin-top: 10px; color: var(--muted)"></div>
+						</div>
+					</div>
+
+					<!-- Save bar -->
+					<div style="padding: 16px 20px; border-top: 1px solid var(--border); display: flex; gap: 10px; align-items: center">
+						<button class="bt-run-btn" onclick="saveConfig()" id="cfg-save-btn">💾 Save Changes</button>
+						<span style="font-size: 11px; color: var(--muted); margin-left: auto"
+							>Changes apply instantly to the running bot. Persisted to <code>config_overrides.json</code>.</span
+						>
+					</div>
+				</div>
+			</div>
+
+			<!-- Row 7: Backtester ─────────────────────────────────── -->
+			<div class="card" id="backtest-card">
+				<div class="card-header">
+					<span class="card-title">⏱ Backtester</span>
+					<span id="bt-status-badge" class="tag">Idle</span>
+				</div>
+				<div class="card-body">
+					<!-- Form ──────────────────────────── -->
+					<div class="bt-form">
+						<div class="bt-form-row">
+							<div class="bt-field">
+								<label class="bt-label">Start Date</label>
+								<input type="date" id="bt-start" class="bt-input" />
+							</div>
+							<div class="bt-field">
+								<label class="bt-label">End Date</label>
+								<input type="date" id="bt-end" class="bt-input" />
+							</div>
+							<div class="bt-field">
+								<label class="bt-label">Starting Capital ($)</label>
+								<input type="number" id="bt-capital" class="bt-input" value="300" min="100" step="50" />
+							</div>
+							<div class="bt-field" style="flex: 2">
+								<label class="bt-label">Symbol Preset</label>
+								<div style="display: flex; gap: 6px; flex-wrap: wrap">
+									<button class="bt-preset active" data-preset="watchlist">Full Watchlist</button>
+									<button class="bt-preset" data-preset="spy">SPY Only</button>
+									<button class="bt-preset" data-preset="tech">Tech</button>
+									<button class="bt-preset" data-preset="custom">Custom</button>
+								</div>
+							</div>
+						</div>
+						<div class="bt-form-row" id="bt-custom-row" style="display: none">
+							<div class="bt-field" style="flex: 1">
+								<label class="bt-label">Custom Symbols (space or comma separated)</label>
+								<input type="text" id="bt-custom-syms" class="bt-input" placeholder="AAPL MSFT NVDA TSLA" />
+							</div>
+						</div>
+						<div class="bt-form-row" style="margin-top: 4px">
+							<button class="bt-run-btn" id="bt-run-btn" onclick="runBacktest()">▶ Run Backtest</button>
+							<button class="bt-reset-btn" id="bt-reset-btn" onclick="resetBacktest()" style="display: none">✕ Clear</button>
+						</div>
+					</div>
+
+					<!-- Progress ───────────────────────── -->
+					<div id="bt-progress-wrap" style="display: none; margin-top: 16px">
+						<div style="display: flex; align-items: center; gap: 10px; margin-bottom: 8px">
+							<span id="bt-progress-msg" style="font-size: 12px; color: var(--muted); flex: 1">Starting…</span>
+							<span id="bt-progress-pct" style="font-size: 12px; font-weight: 600; color: var(--blue)">0%</span>
+						</div>
+						<div class="bt-progress-track">
+							<div class="bt-progress-fill" id="bt-progress-fill" style="width: 0%"></div>
+						</div>
+						<div class="log-box" id="bt-log-box" style="height: 140px; margin-top: 10px"></div>
+					</div>
+
+					<!-- Results ────────────────────────── -->
+					<div id="bt-results-wrap" style="display: none; margin-top: 20px">
+						<div style="display: flex; align-items: center; gap: 12px; margin-bottom: 16px">
+							<span style="font-size: 13px; font-weight: 600; color: var(--text)">Results</span>
+							<span id="bt-results-period" style="font-size: 11px; color: var(--muted)"></span>
+						</div>
+
+						<!-- KPI grid -->
+						<div class="bt-kpi-grid" id="bt-kpi-grid"></div>
+
+						<!-- Two-col: equity chart + trade metrics -->
+						<div class="two-col" style="margin-top: 20px">
+							<div>
+								<div
+									style="
+										font-size: 11px;
+										font-weight: 600;
+										color: var(--muted);
+										text-transform: uppercase;
+										letter-spacing: 0.4px;
+										margin-bottom: 8px;
+									"
+								>
+									Equity Curve
+								</div>
+								<canvas id="bt-equity-canvas" style="width: 100%; height: 200px; display: block"></canvas>
+							</div>
+							<div>
+								<div
+									style="
+										font-size: 11px;
+										font-weight: 600;
+										color: var(--muted);
+										text-transform: uppercase;
+										letter-spacing: 0.4px;
+										margin-bottom: 8px;
+									"
+								>
+									Trade Breakdown
+								</div>
+								<canvas id="bt-breakdown-canvas" style="width: 100%; height: 200px; display: block"></canvas>
+							</div>
+						</div>
+
+						<!-- Trade log table -->
+						<div style="margin-top: 20px">
+							<div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px">
+								<span style="font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.4px"
+									>Trade Log</span
+								>
+								<span id="bt-trade-count" style="font-size: 11px; color: var(--muted)"></span>
+							</div>
+							<div
+								style="
+									overflow-x: auto;
+									max-height: 360px;
+									overflow-y: auto;
+									border: 1px solid var(--border);
+									border-radius: var(--radius);
+								"
+							>
+								<table class="data-table" id="bt-trades-table">
+									<thead>
+										<tr>
+											<th>Symbol</th>
+											<th>Entry</th>
+											<th>Exit</th>
+											<th class="num">Entry $</th>
+											<th class="num">Exit $</th>
+											<th class="num">Qty</th>
+											<th class="num">P&L</th>
+											<th class="num">P&L %</th>
+											<th class="num">Days</th>
+											<th>Reason</th>
+										</tr>
+									</thead>
+									<tbody id="bt-trades-tbody"></tbody>
+								</table>
+							</div>
+						</div>
+					</div>
+				</div>
+			</div>
+		</div>
+		<!-- /main -->
+
+		<!-- ── JavaScript ──────────────────────────────────────── -->
+		<script>
+			/* ── Utility ─────────────────────────────────────────────── */
+			const $ = (id) => document.getElementById(id);
+
+			function fmt$(n) {
+				return n == null ? "—" : "$" + Number(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+			}
+			function fmtPct(n) {
+				return n == null ? "—" : (n >= 0 ? "+" : "") + Number(n).toFixed(2) + "%";
+			}
+			function fmtN(n, d = 2) {
+				return n == null ? "—" : Number(n).toFixed(d);
+			}
+
+			function colorClass(n) {
+				if (n == null) return "neu";
+				return n > 0 ? "pos" : n < 0 ? "neg" : "neu";
+			}
+
+			function setInner(id, html) {
+				const el = $(id);
+				if (el) el.innerHTML = html;
+			}
+
+			function setClass(el, cls) {
+				if (typeof el === "string") el = $(el);
+				if (el) el.className = cls;
+			}
+
+			/* ── Fetch helpers ───────────────────────────────────────── */
+			async function apiFetch(url) {
+				const r = await fetch(url);
+				if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+				return r.json();
+			}
+
+			/* ── Clock / market status ───────────────────────────────── */
+			async function loadClock() {
+				try {
+					const d = await apiFetch("/api/clock");
+					const dot = $("market-dot");
+					const label = $("market-label");
+					if (d.is_open) {
+						dot.className = "status-dot open";
+						label.textContent = `Market open · closes ${d.next_close}`;
+					} else {
+						dot.className = "status-dot closed";
+						label.textContent = `Market closed · opens ${d.next_open}`;
+					}
+				} catch (e) {
+					$("market-label").textContent = "Clock unavailable";
+				}
+			}
+
+			/* ── Account stats ───────────────────────────────────────── */
+			async function loadAccount() {
+				try {
+					const d = await apiFetch("/api/account");
+
+					// Mode badge + keep _currentTradingMode in sync
+					_currentTradingMode = d.mode.toLowerCase();
+					const badge = $("mode-badge");
+					badge.textContent = d.mode;
+					badge.className = "mode-badge" + (d.mode === "LIVE" ? " live" : "");
+
+					// Equity
+					setInner("stat-equity", fmt$(d.equity));
+					setInner("stat-equity-sub", `Buying power: ${fmt$(d.buying_power)}`);
+
+					// Cash
+					setInner("stat-cash", fmt$(d.cash));
+
+					// Day P&L
+					const pnlClass = colorClass(d.day_pnl);
+					setInner("stat-daypnl", `<span class="${pnlClass}">${fmt$(d.day_pnl)}</span>`);
+					setInner("stat-daypnl-sub", `<span class="${pnlClass}">${fmtPct(d.day_pnl_pct)} today</span>`);
+
+					// Day trades
+					const dtCount = d.daytrade_count;
+					const dtClass = dtCount >= 3 ? "neg" : dtCount >= 2 ? "warn" : "pos";
+					setInner("stat-daytrades", `<span class="${dtClass}">${dtCount}</span>`);
+				} catch (e) {
+					setInner("stat-equity", '<span class="neg">Error</span>');
+				}
+			}
+
+			/* ── Open positions ──────────────────────────────────────── */
+			async function loadPositions() {
+				const tbody = $("positions-tbody");
+				try {
+					const data = await apiFetch("/api/positions");
+					if (!data.length) {
+						tbody.innerHTML = '<tr><td colspan="6" class="empty-state">No open positions</td></tr>';
+						setInner("stat-positions", "0");
+						setInner("stat-positions-sub", "No open positions");
+						return;
+					}
+
+					setInner("stat-positions", data.length);
+					const totalPnl = data.reduce((s, p) => s + p.pnl, 0);
+					const cls = colorClass(totalPnl);
+					setInner("stat-positions-sub", `<span class="${cls}">Unrealised: ${fmt$(totalPnl)}</span>`);
+
+					tbody.innerHTML = data
+						.map((p) => {
+							const pc = colorClass(p.pnl);
+							return `<tr>
+        <td><strong>${p.symbol}</strong></td>
+        <td class="num">${fmtN(p.qty, p.qty % 1 === 0 ? 0 : 3)}</td>
+        <td class="num">${fmt$(p.entry_price)}</td>
+        <td class="num">${fmt$(p.current_price)}</td>
+        <td class="num ${pc}">${fmt$(p.pnl)}</td>
+        <td class="num ${pc}">${fmtPct(p.pnl_pct)}</td>
+      </tr>`;
+						})
+						.join("");
+				} catch (e) {
+					tbody.innerHTML = `<tr class="loading-row"><td colspan="6" class="neg">Error: ${e.message}</td></tr>`;
+				}
+			}
+
+			/* ── Market regime ───────────────────────────────────────── */
+			async function loadRegime() {
+				try {
+					const d = await apiFetch("/api/regime");
+
+					// Regime badge
+					const badge = d.bull_market ? `<span class="regime-badge bull">▲ BULL</span>` : `<span class="regime-badge bear">▼ BEAR</span>`;
+					setInner("regime-label", badge);
+
+					setInner("regime-spy", `$${fmtN(d.spy_close)}`);
+					setInner("regime-sma", `$${fmtN(d.sma_200)}`);
+
+					const distClass = d.sma_pct_diff >= 0 ? "pos" : "neg";
+					setInner("regime-dist", `<span class="${distClass}">${fmtPct(d.sma_pct_diff)}</span>`);
+
+					// VIXY
+					if (d.vixy_level != null) {
+						const vixClass = d.long_halted ? "neg" : d.vix_reduced ? "warn" : "pos";
+						setInner("regime-vixy", `<span class="${vixClass}">${fmtN(d.vixy_level)}</span>`);
+
+						// VIX bar — fill relative to halt threshold (max = 2× halt threshold for scale)
+						const maxVix = d.vix_halt_threshold * 1.5;
+						const fillPct = Math.min(100, (d.vixy_level / maxVix) * 100);
+						const barColor = d.long_halted ? "var(--red)" : d.vix_reduced ? "var(--yellow)" : "var(--green)";
+						$("vix-bar").style.width = fillPct + "%";
+						$("vix-bar").style.background = barColor;
+
+						let vixMsg = "Normal";
+						if (d.long_halted) vixMsg = `HALTED (≥${d.vix_halt_threshold})`;
+						else if (d.vix_reduced) vixMsg = `Reduced size (≥${d.vix_reduce_threshold})`;
+						$("vix-bar-label").textContent = vixMsg;
+					} else {
+						setInner("regime-vixy", '<span class="muted">N/A</span>');
+					}
+
+					// Entry status
+					let entryHtml;
+					if (d.long_halted) {
+						entryHtml = `<span class="regime-badge bear">🛑 Halted</span>`;
+					} else if (!d.bull_market && d.inverse_mode_enabled) {
+						entryHtml = `<span class="regime-badge warn">⚠ Inverse ETFs</span>`;
+					} else if (d.vix_reduced) {
+						entryHtml = `<span class="regime-badge warn">⚡ Half size</span>`;
+					} else {
+						entryHtml = `<span class="regime-badge bull">✓ Open</span>`;
+					}
+					setInner("regime-entries", entryHtml);
+				} catch (e) {
+					setInner("regime-label", '<span class="neg">Error</span>');
+				}
+			}
+
+			/* ── Watchlist scores ────────────────────────────────────── */
+			async function loadWatchlist() {
+				const tbody = $("watchlist-tbody");
+				tbody.innerHTML = '<tr class="loading-row"><td colspan="6"><span class="spinner"></span> Loading…</td></tr>';
+				try {
+					const data = await apiFetch("/api/watchlist");
+					if (!data.length) {
+						tbody.innerHTML = '<tr><td colspan="6" class="empty-state">No data</td></tr>';
+						return;
+					}
+					tbody.innerHTML = data
+						.map((s) => {
+							const scoreClass = s.score >= 6 ? "score-high" : s.score >= 4 ? "score-mid" : "score-low";
+							const rsiClass = s.rsi < 35 ? "pos" : s.rsi > 70 ? "neg" : "neu";
+							const trendDot = s.above_ema50
+								? '<span style="color:var(--green);font-size:10px;">▲</span>'
+								: '<span style="color:var(--red);font-size:10px;">▼</span>';
+							return `<tr>
+        <td><strong>${s.symbol}</strong> ${trendDot}</td>
+        <td class="num">$${fmtN(s.close)}</td>
+        <td class="num ${rsiClass}">${fmtN(s.rsi, 1)}</td>
+        <td class="num">${fmtN(s.adx, 1)}</td>
+        <td class="num">${fmtN(s.vol_ratio, 2)}×</td>
+        <td class="num"><span class="score-pill ${scoreClass}">${s.score}</span></td>
+      </tr>`;
+						})
+						.join("");
+				} catch (e) {
+					tbody.innerHTML = `<tr class="loading-row"><td colspan="6" class="neg">Error: ${e.message}</td></tr>`;
+				}
+			}
+
+			/* ── Order history ───────────────────────────────────────── */
+			async function loadOrders() {
+				const tbody = $("orders-tbody");
+				try {
+					const data = await apiFetch("/api/orders");
+					if (!data.length) {
+						tbody.innerHTML = '<tr><td colspan="6" class="empty-state">No recent orders</td></tr>';
+						return;
+					}
+					tbody.innerHTML = data
+						.slice(0, 50)
+						.map((o) => {
+							const sc = o.side === "buy" ? "side-buy" : "side-sell";
+							return `<tr>
+        <td><strong>${o.symbol}</strong></td>
+        <td class="${sc}">${o.side.toUpperCase()}</td>
+        <td class="num">${fmtN(o.qty, o.qty % 1 === 0 ? 0 : 3)}</td>
+        <td class="num">$${fmtN(o.filled_price)}</td>
+        <td style="color:var(--muted);font-size:12px;">${o.filled_at}</td>
+        <td><span class="tag">${o.order_type}</span></td>
+      </tr>`;
+						})
+						.join("");
+				} catch (e) {
+					tbody.innerHTML = `<tr class="loading-row"><td colspan="6" class="neg">Error: ${e.message}</td></tr>`;
+				}
+			}
+
+			/* ── Equity chart ────────────────────────────────────────── */
+			async function loadEquityHistory() {
+				const canvas = $("equity-canvas");
+				const ctx = canvas.getContext("2d");
+
+				try {
+					const data = await apiFetch("/api/equity_history");
+					if (!data || !data.length) {
+						ctx.fillStyle = "#8b949e";
+						ctx.font = "13px system-ui";
+						ctx.textAlign = "center";
+						ctx.fillText("No history data available", canvas.width / 2, canvas.height / 2);
+						return;
+					}
+					drawEquityCurve(canvas, ctx, data);
+				} catch (e) {
+					ctx.fillStyle = "#f85149";
+					ctx.font = "12px system-ui";
+					ctx.textAlign = "center";
+					ctx.fillText("Could not load equity history", canvas.width / 2, canvas.height / 2);
+				}
+			}
+
+			function drawEquityCurve(canvas, ctx, data) {
+				// Resize canvas to actual rendered pixel size
+				const dpr = window.devicePixelRatio || 1;
+				const rect = canvas.getBoundingClientRect();
+				canvas.width = rect.width * dpr;
+				canvas.height = rect.height * dpr;
+				ctx.scale(dpr, dpr);
+
+				const W = rect.width;
+				const H = rect.height;
+				const pad = { top: 16, right: 20, bottom: 36, left: 60 };
+				const cW = W - pad.left - pad.right;
+				const cH = H - pad.top - pad.bottom;
+
+				ctx.clearRect(0, 0, W, H);
+
+				const equities = data.map((d) => d.equity);
+				const minEq = Math.min(...equities);
+				const maxEq = Math.max(...equities);
+				const range = maxEq - minEq || 1;
+
+				const xScale = (i) => pad.left + (i / (data.length - 1)) * cW;
+				const yScale = (v) => pad.top + cH - ((v - minEq) / range) * cH;
+
+				// Grid lines (4 horizontal)
+				ctx.strokeStyle = "#21262d";
+				ctx.lineWidth = 1;
+				for (let i = 0; i <= 4; i++) {
+					const y = pad.top + (i / 4) * cH;
+					ctx.beginPath();
+					ctx.moveTo(pad.left, y);
+					ctx.lineTo(pad.left + cW, y);
+					ctx.stroke();
+					const v = maxEq - (i / 4) * range;
+					ctx.fillStyle = "#8b949e";
+					ctx.font = "10px system-ui";
+					ctx.textAlign = "right";
+					ctx.fillText("$" + v.toLocaleString("en-US", { maximumFractionDigits: 0 }), pad.left - 6, y + 3);
+				}
+
+				// X-axis labels (every ~7 points)
+				ctx.fillStyle = "#8b949e";
+				ctx.font = "10px system-ui";
+				ctx.textAlign = "center";
+				const step = Math.max(1, Math.floor(data.length / 6));
+				for (let i = 0; i < data.length; i += step) {
+					const x = xScale(i);
+					const d = data[i].date.slice(5); // MM-DD
+					ctx.fillText(d, x, H - pad.bottom + 16);
+				}
+
+				// Gradient fill
+				const grad = ctx.createLinearGradient(0, pad.top, 0, pad.top + cH);
+				const isProfit = equities[equities.length - 1] >= equities[0];
+				if (isProfit) {
+					grad.addColorStop(0, "rgba(63,185,80,0.25)");
+					grad.addColorStop(1, "rgba(63,185,80,0.00)");
+				} else {
+					grad.addColorStop(0, "rgba(248,81,73,0.20)");
+					grad.addColorStop(1, "rgba(248,81,73,0.00)");
+				}
+				ctx.beginPath();
+				ctx.moveTo(xScale(0), yScale(equities[0]));
+				for (let i = 1; i < data.length; i++) ctx.lineTo(xScale(i), yScale(equities[i]));
+				ctx.lineTo(xScale(data.length - 1), pad.top + cH);
+				ctx.lineTo(xScale(0), pad.top + cH);
+				ctx.closePath();
+				ctx.fillStyle = grad;
+				ctx.fill();
+
+				// Line
+				ctx.beginPath();
+				ctx.moveTo(xScale(0), yScale(equities[0]));
+				for (let i = 1; i < data.length; i++) ctx.lineTo(xScale(i), yScale(equities[i]));
+				ctx.strokeStyle = isProfit ? "#3fb950" : "#f85149";
+				ctx.lineWidth = 2;
+				ctx.lineJoin = "round";
+				ctx.stroke();
+
+				// Start / end dots
+				[
+					[0, equities[0]],
+					[data.length - 1, equities[data.length - 1]],
+				].forEach(([i, v]) => {
+					ctx.beginPath();
+					ctx.arc(xScale(i), yScale(v), 4, 0, Math.PI * 2);
+					ctx.fillStyle = isProfit ? "#3fb950" : "#f85149";
+					ctx.strokeStyle = "#0d1117";
+					ctx.lineWidth = 2;
+					ctx.fill();
+					ctx.stroke();
+				});
+			}
+
+			/* ── Log viewer ──────────────────────────────────────────── */
+			async function loadLogs() {
+				const box = $("log-box");
+				try {
+					const d = await apiFetch("/api/logs?lines=120");
+					if (!d.lines.length) {
+						box.textContent = "Log file is empty.";
+						return;
+					}
+					box.innerHTML = d.lines
+						.map((line) => {
+							let cls = "log-info";
+							const l = line.toLowerCase();
+							if (l.includes("error")) cls = "log-error";
+							else if (l.includes("warning") || l.includes("warn")) cls = "log-warn";
+							else if (l.includes("buy ") || l.includes("sell ") || l.includes("entry") || l.includes("exit")) cls = "log-trade";
+							return `<div class="${cls}">${escHtml(line)}</div>`;
+						})
+						.join("");
+
+					if ($("log-autoscroll").checked) {
+						box.scrollTop = box.scrollHeight;
+					}
+				} catch (e) {
+					box.textContent = `Error loading logs: ${e.message}`;
+				}
+			}
+
+			function escHtml(s) {
+				return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+			}
+
+			/* ── SSE live updates ────────────────────────────────────── */
+			function startSSE() {
+				const es = new EventSource("/api/stream");
+
+				es.onmessage = (e) => {
+					try {
+						const d = JSON.parse(e.data);
+						if (d.error) return;
+
+						// Update last-update timestamp
+						$("last-update").textContent = `Updated ${d.ts}`;
+
+						// Equity
+						setInner("stat-equity", fmt$(d.equity));
+						setInner("stat-cash", fmt$(d.cash));
+
+						// Day P&L
+						const pc = colorClass(d.day_pnl);
+						setInner("stat-daypnl", `<span class="${pc}">${fmt$(d.day_pnl)}</span>`);
+						setInner("stat-daypnl-sub", `<span class="${pc}">${fmtPct(d.day_pnl_pct)} today</span>`);
+
+						// Positions count
+						setInner("stat-positions", d.n_positions);
+
+						// Day trades
+						const dtc = d.daytrade_count;
+						const dtClass = dtc >= 3 ? "neg" : dtc >= 2 ? "warn" : "pos";
+						setInner("stat-daytrades", `<span class="${dtClass}">${dtc}</span>`);
+
+						// Market status
+						const dot = $("market-dot");
+						dot.className = d.market_open ? "status-dot open" : "status-dot closed";
+
+						// Refresh positions table from SSE data (lightweight)
+						if (d.positions && d.positions.length > 0) {
+							const tbody = $("positions-tbody");
+							const totalPnl = d.positions.reduce((s, p) => s + p.pnl, 0);
+							const cls = colorClass(totalPnl);
+							setInner("stat-positions-sub", `<span class="${cls}">Unrealised: ${fmt$(totalPnl)}</span>`);
+							tbody.innerHTML = d.positions
+								.map((p) => {
+									const pc = colorClass(p.pnl);
+									return `<tr>
+            <td><strong>${p.symbol}</strong></td>
+            <td class="num">${fmtN(p.qty, p.qty % 1 === 0 ? 0 : 3)}</td>
+            <td class="num">${fmt$(p.entry_price)}</td>
+            <td class="num">${fmt$(p.current_price)}</td>
+            <td class="num ${pc}">${fmt$(p.pnl)}</td>
+            <td class="num ${pc}">${fmtPct(p.pnl_pct)}</td>
+          </tr>`;
+								})
+								.join("");
+						} else if (d.positions && d.positions.length === 0) {
+							$("positions-tbody").innerHTML = '<tr><td colspan="6" class="empty-state">No open positions</td></tr>';
+							setInner("stat-positions", "0");
+							setInner("stat-positions-sub", "No open positions");
+						}
+					} catch (_) {}
+				};
+
+				es.onerror = () => {
+					$("last-update").textContent = "⚠ Stream disconnected — will retry";
+				};
+			}
+
+			/* ── Init ────────────────────────────────────────────────── */
+			async function init() {
+				// Load everything in parallel
+				await Promise.allSettled([loadClock(), loadAccount(), loadPositions(), loadRegime(), loadEquityHistory(), loadTradingModeInfo()]);
+
+				// Slower/heavier loads after
+				loadWatchlist();
+				loadOrders();
+				loadLogs();
+				loadConfig();
+				loadWatchlistEditor();
+
+				// Bot control — load status then pre-fill buffered logs
+				await loadBotStatus();
+				loadBotLogs("paper");
+				loadBotLogs("live");
+				// If either bot is already running, open the SSE stream
+				["paper", "live"].forEach((m) => {
+					const dot = $(`bot-dot-${m}`);
+					if (dot && dot.classList.contains("running")) _startBotStream(m);
+				});
+
+				// Start live stream
+				startSSE();
+
+				// Periodic refresh schedules
+				setInterval(loadAccount, 60_000); // every 1 min
+				setInterval(loadPositions, 30_000); // every 30 s
+				setInterval(loadClock, 60_000); // every 1 min
+				setInterval(loadRegime, 120_000); // every 2 min
+				setInterval(loadEquityHistory, 300_000); // every 5 min
+				setInterval(loadLogs, 30_000); // every 30 s
+				setInterval(loadOrders, 120_000); // every 2 min
+				setInterval(loadBotStatus, 15_000); // bot status every 15 s
+				// Watchlist is slow (30 API calls) — refresh every 5 min
+				setInterval(loadWatchlist, 300_000);
+			}
+
+			window.addEventListener("load", init);
+			window.addEventListener("resize", () => loadEquityHistory());
+
+			/* ═══════════════════════════════════════════════════════════
+			   TRADING MODE SWITCH
+			   ═══════════════════════════════════════════════════════════ */
+
+			let _currentTradingMode = "paper"; // updated by loadAccount()
+			let _targetMode = null;
+			let _liveKeysConfigured = false; // updated by loadTradingModeInfo()
+
+			async function loadTradingModeInfo() {
+				try {
+					const d = await apiFetch("/api/trading-mode");
+					_currentTradingMode = d.mode;
+					_liveKeysConfigured = d.live_keys_configured;
+					const badge = $("mode-badge");
+					badge.textContent = d.mode.toUpperCase();
+					badge.className = "mode-badge" + (d.mode === "live" ? " live" : "");
+				} catch (_) {}
+			}
+
+			function openTradingModeModal() {
+				_targetMode = _currentTradingMode === "paper" ? "live" : "paper";
+				const toLive = _targetMode === "live";
+
+				$("tm-title").textContent = toLive ? "⚠ Switch to LIVE Trading" : "Switch to Paper Trading";
+
+				$("tm-desc").textContent = toLive
+					? "You are about to connect the bot to your real brokerage account. Real money will be at risk."
+					: "You are about to switch back to the paper trading sandbox. No real money will be used.";
+
+				const warn = $("tm-warning");
+				if (toLive && !_liveKeysConfigured) {
+					// Live keys missing — block the switch entirely
+					warn.style.display = "";
+					warn.innerHTML =
+						"❌ <strong>Live API keys are not configured.</strong> Add <code>LIVE_ALPACA_API_KEY</code> and <code>LIVE_ALPACA_SECRET_KEY</code> to your <code>.env</code> file and restart the server before switching to live trading.";
+					$("tm-confirm-row").style.display = "none";
+					const btn = $("tm-btn-confirm");
+					btn.disabled = true;
+					btn.className = "tm-btn-confirm live";
+					btn.textContent = "🔴 Switch to LIVE";
+					$("tm-modal-status").textContent = "";
+					$("tm-overlay").classList.add("open");
+					return;
+				}
+
+				if (toLive) {
+					warn.style.display = "";
+					warn.innerHTML =
+						"⚠ <strong>This uses real funds.</strong> All orders placed while in LIVE mode will execute against your actual Alpaca account. Make sure your risk settings are correct before proceeding.";
+				} else {
+					warn.style.display = "none";
+				}
+
+				const confirmRow = $("tm-confirm-row");
+				const confirmInput = $("tm-confirm-input");
+				if (toLive) {
+					confirmRow.style.display = "";
+					confirmInput.value = "";
+				} else {
+					confirmRow.style.display = "none";
+				}
+
+				const btn = $("tm-btn-confirm");
+				btn.className = `tm-btn-confirm ${_targetMode}`;
+				btn.textContent = toLive ? "🔴 Switch to LIVE" : "✅ Switch to Paper";
+				btn.disabled = toLive; // disabled until "CONFIRM" typed
+
+				$("tm-modal-status").textContent = "";
+				$("tm-overlay").classList.add("open");
+				if (toLive) setTimeout(() => confirmInput.focus(), 50);
+			}
+
+			function closeTradingModeModal() {
+				$("tm-overlay").classList.remove("open");
+				_targetMode = null;
+			}
+
+			function tmCheckConfirm() {
+				const val = $("tm-confirm-input").value.trim();
+				$("tm-btn-confirm").disabled = val !== "CONFIRM";
+			}
+
+			async function doSwitchMode() {
+				if (!_targetMode) return;
+				const btn = $("tm-btn-confirm");
+				btn.disabled = true;
+				$("tm-modal-status").textContent = "Switching…";
+				$("tm-modal-status").style.color = "var(--muted)";
+
+				try {
+					const resp = await fetch("/api/trading-mode", {
+						method: "POST",
+						headers: { "Content-Type": "application/json" },
+						body: JSON.stringify({
+							mode: _targetMode,
+							confirm: _targetMode === "live" ? $("tm-confirm-input").value.trim() : "CONFIRM",
+						}),
+					});
+					if (!resp.ok) {
+						const err = await resp.json();
+						throw new Error(err.detail || resp.statusText);
+					}
+					const data = await resp.json();
+					_currentTradingMode = data.mode;
+
+					// Update badge immediately
+					const badge = $("mode-badge");
+					badge.textContent = data.mode.toUpperCase();
+					badge.className = "mode-badge" + (data.mode === "live" ? " live" : "");
+
+					$("tm-modal-status").textContent = `✓ Switched to ${data.mode.toUpperCase()}`;
+					$("tm-modal-status").style.color = "var(--green)";
+					setTimeout(closeTradingModeModal, 1200);
+
+					// Refresh account data against new endpoint
+					setTimeout(loadAccount, 1500);
+				} catch (e) {
+					$("tm-modal-status").textContent = "Error: " + e.message;
+					$("tm-modal-status").style.color = "var(--red)";
+					btn.disabled = false;
+				}
+			}
+
+			// Escape key closes modal
+			document.addEventListener("keydown", (e) => {
+				if (e.key === "Escape") closeTradingModeModal();
+			});
+
+			/* ═══════════════════════════════════════════════════════════
+			   ALGORITHM CONFIG
+			   ═══════════════════════════════════════════════════════════ */
+
+			let _cfgOriginal = {}; // values as loaded from server
+			let _cfgPending = {}; // unsaved changes
+
+			// Wire config tabs
+			document.querySelectorAll("#cfg-tabs .tab-btn").forEach((btn) => {
+				btn.addEventListener("click", () => {
+					document.querySelectorAll("#cfg-tabs .tab-btn").forEach((b) => b.classList.remove("active"));
+					document.querySelectorAll("#config-card .tab-panel").forEach((p) => p.classList.remove("active"));
+					btn.classList.add("active");
+					$(btn.dataset.tab).classList.add("active");
+				});
+			});
+
+			// Mark field dirty when changed
+			document.querySelectorAll(".cfg-input").forEach((inp) => {
+				inp.addEventListener("input", () => {
+					const key = inp.dataset.key;
+					const orig = _cfgOriginal[key];
+					const cur = _cfgCoerce(key, inp.value);
+					if (orig !== undefined && String(cur) !== String(orig)) {
+						inp.classList.add("changed");
+						_cfgPending[key] = cur;
+					} else {
+						inp.classList.remove("changed");
+						delete _cfgPending[key];
+					}
+					_updateSaveStatus();
+				});
+			});
+
+			function _cfgCoerce(key, raw) {
+				const orig = _cfgOriginal[key];
+				if (typeof orig === "boolean" || raw === "true" || raw === "false") return raw === "true" || raw === true;
+				if (typeof orig === "number") return Number(raw);
+				return raw;
+			}
+
+			function _updateSaveStatus() {
+				const n = Object.keys(_cfgPending).length;
+				$("cfg-save-status").textContent = n > 0 ? `${n} unsaved change${n > 1 ? "s" : ""}` : "";
+				$("cfg-save-status").style.color = n > 0 ? "var(--yellow)" : "var(--muted)";
+			}
+
+			async function loadConfig() {
+				try {
+					const cfg = await apiFetch("/api/config");
+					_cfgOriginal = cfg;
+					_cfgPending = {};
+					// Populate all inputs
+					document.querySelectorAll(".cfg-input").forEach((inp) => {
+						const key = inp.dataset.key;
+						if (!(key in cfg)) return;
+						const val = cfg[key];
+						if (inp.tagName === "SELECT") {
+							inp.value = String(val);
+						} else {
+							inp.value = val;
+						}
+						inp.classList.remove("changed");
+					});
+					_updateSaveStatus();
+				} catch (e) {
+					$("cfg-save-status").textContent = "Error loading config";
+					$("cfg-save-status").style.color = "var(--red)";
+				}
+			}
+
+			async function saveConfig() {
+				if (Object.keys(_cfgPending).length === 0) {
+					$("cfg-save-status").textContent = "No changes to save.";
+					return;
+				}
+				const btn = $("cfg-save-btn");
+				btn.disabled = true;
+				btn.textContent = "Saving…";
+				try {
+					const resp = await fetch("/api/config", {
+						method: "POST",
+						headers: { "Content-Type": "application/json" },
+						body: JSON.stringify({ updates: _cfgPending }),
+					});
+					if (!resp.ok) {
+						const err = await resp.json();
+						throw new Error(err.detail || resp.statusText);
+					}
+					// Merge into original, clear pending
+					Object.assign(_cfgOriginal, _cfgPending);
+					_cfgPending = {};
+					document.querySelectorAll(".cfg-input.changed").forEach((el) => el.classList.remove("changed"));
+					$("cfg-save-status").textContent = "✓ Saved & applied";
+					$("cfg-save-status").style.color = "var(--green)";
+					setTimeout(() => {
+						if ($("cfg-save-status").textContent.startsWith("✓")) $("cfg-save-status").textContent = "";
+					}, 3000);
+				} catch (e) {
+					$("cfg-save-status").textContent = "Error: " + e.message;
+					$("cfg-save-status").style.color = "var(--red)";
+				} finally {
+					btn.disabled = false;
+					btn.textContent = "💾 Save Changes";
+				}
+			}
+
+			async function resetConfig() {
+				if (!confirm("Reset ALL config to defaults from config.py? This cannot be undone.")) return;
+				try {
+					await fetch("/api/config/reset", { method: "POST" });
+					await loadConfig();
+					$("cfg-save-status").textContent = "✓ Reset to defaults";
+					$("cfg-save-status").style.color = "var(--green)";
+					setTimeout(() => {
+						$("cfg-save-status").textContent = "";
+					}, 3000);
+				} catch (e) {
+					$("cfg-save-status").textContent = "Error: " + e.message;
+					$("cfg-save-status").style.color = "var(--red)";
+				}
+			}
+
+			/* ═══════════════════════════════════════════════════════════
+			   BOT CONTROL
+			   ═══════════════════════════════════════════════════════════ */
+
+			let _botStreams = { paper: null, live: null };
+			let _botUptimeIntervals = { paper: null, live: null };
+			let _botUptimeStart = { paper: null, live: null };
+
+			function _fmtUptime(seconds) {
+				if (seconds == null) return "—";
+				const h = Math.floor(seconds / 3600);
+				const m = Math.floor((seconds % 3600) / 60);
+				const s = seconds % 60;
+				if (h > 0) return `${h}h ${m}m`;
+				if (m > 0) return `${m}m ${s}s`;
+				return `${s}s`;
+			}
+
+			function _applyBotState(mode, state) {
+				const running = state.running;
+				const dot = $(`bot-dot-${mode}`);
+				const statusEl = $(`bot-status-${mode}`);
+				const pidEl = $(`bot-pid-${mode}`);
+				const uptimeEl = $(`bot-uptime-${mode}`);
+				const startBtn = $(`bot-start-${mode}`);
+				const stopBtn = $(`bot-stop-${mode}`);
+
+				dot.className = "bot-status-dot" + (running ? " running" : "");
+				statusEl.textContent = running ? "Running" : "Stopped";
+				statusEl.className = "bot-meta-value bot-status-text " + (running ? "running" : "stopped");
+				pidEl.textContent = state.pid ?? "—";
+
+				startBtn.style.display = running ? "none" : "";
+				stopBtn.style.display = running ? "" : "none";
+				startBtn.disabled = false;
+
+				// Uptime counter
+				clearInterval(_botUptimeIntervals[mode]);
+				if (running && state.uptime_s != null) {
+					_botUptimeStart[mode] = Date.now() - state.uptime_s * 1000;
+					const tick = () => {
+						const s = Math.floor((Date.now() - _botUptimeStart[mode]) / 1000);
+						uptimeEl.textContent = _fmtUptime(s);
+					};
+					tick();
+					_botUptimeIntervals[mode] = setInterval(tick, 1000);
+				} else {
+					uptimeEl.textContent = "—";
+					_botUptimeStart[mode] = null;
+				}
+			}
+
+			function _appendBotLog(mode, line) {
+				const box = $(`bot-log-${mode}`);
+				if (!box) return;
+				const div = document.createElement("div");
+				// Colour-code common log patterns
+				if (/error|exception|traceback/i.test(line)) div.className = "log-line-err";
+				else if (/warn/i.test(line)) div.className = "log-line-warn";
+				else if (/bought|sold|filled|profit|✓/i.test(line)) div.className = "log-line-ok";
+				div.textContent = line;
+				box.appendChild(div);
+				// Keep max 300 lines
+				while (box.childElementCount > 300) box.removeChild(box.firstChild);
+				box.scrollTop = box.scrollHeight;
+			}
+
+			async function loadBotStatus() {
+				try {
+					const d = await apiFetch("/api/bot/status");
+					_applyBotState("paper", d.paper);
+					_applyBotState("live", d.live);
+				} catch (_) {}
+			}
+
+			function _startBotStream(mode) {
+				if (_botStreams[mode]) {
+					_botStreams[mode].close();
+					_botStreams[mode] = null;
+				}
+				const es = new EventSource(`/api/bot/stream/${mode}`);
+				_botStreams[mode] = es;
+				es.onmessage = (ev) => {
+					const d = JSON.parse(ev.data);
+					if (d.line) _appendBotLog(mode, d.line);
+					if (d.running === false) {
+						// Bot stopped — refresh status and stop stream
+						loadBotStatus();
+						es.close();
+						_botStreams[mode] = null;
+					}
+				};
+				es.onerror = () => {
+					es.close();
+					_botStreams[mode] = null;
+				};
+			}
+
+			async function startBot(mode) {
+				const btn = $(`bot-start-${mode}`);
+				btn.disabled = true;
+				btn.textContent = "Starting…";
+				try {
+					const resp = await fetch("/api/bot/start", {
+						method: "POST",
+						headers: { "Content-Type": "application/json" },
+						body: JSON.stringify({ mode }),
+					});
+					if (!resp.ok) {
+						const err = await resp.json();
+						throw new Error(err.detail || resp.statusText);
+					}
+					await loadBotStatus();
+					_startBotStream(mode);
+					// Pre-fill log box with a startup line
+					_appendBotLog(mode, `[dashboard] ${mode.toUpperCase()} bot started.`);
+				} catch (e) {
+					btn.disabled = false;
+					btn.textContent = mode === "live" ? "▶ Start LIVE" : "▶ Start";
+					_appendBotLog(mode, `[error] ${e.message}`);
+					alert(`Could not start ${mode} bot:\n${e.message}`);
+				}
+			}
+
+			async function stopBot(mode) {
+				if (!confirm(`Stop the ${mode.toUpperCase()} bot?`)) return;
+				try {
+					const resp = await fetch("/api/bot/stop", {
+						method: "POST",
+						headers: { "Content-Type": "application/json" },
+						body: JSON.stringify({ mode }),
+					});
+					if (!resp.ok) {
+						const err = await resp.json();
+						throw new Error(err.detail || resp.statusText);
+					}
+					_appendBotLog(mode, `[dashboard] ${mode.toUpperCase()} bot stopped.`);
+					await loadBotStatus();
+					if (_botStreams[mode]) {
+						_botStreams[mode].close();
+						_botStreams[mode] = null;
+					}
+				} catch (e) {
+					alert(`Could not stop ${mode} bot:\n${e.message}`);
+				}
+			}
+
+			// Pre-fill log boxes with buffered lines on page load
+			async function loadBotLogs(mode) {
+				try {
+					const d = await apiFetch(`/api/bot/logs/${mode}?lines=80`);
+					const box = $(`bot-log-${mode}`);
+					box.innerHTML = "";
+					(d.lines || []).forEach((l) => _appendBotLog(mode, l));
+				} catch (_) {}
+			}
+
+			/* ═══════════════════════════════════════════════════════════
+			   WATCHLIST EDITOR
+			   ═══════════════════════════════════════════════════════════ */
+
+			let _wlData = { watchlist: [], inverse_watchlist: [] };
+
+			function _wlStatus(msg, color = "var(--green)") {
+				const el = $("wl-status");
+				el.textContent = msg;
+				el.style.color = color;
+				if (msg)
+					setTimeout(() => {
+						if (el.textContent === msg) el.textContent = "";
+					}, 3000);
+			}
+
+			function _renderWlTags(listName) {
+				const containerId = listName === "watchlist" ? "wl-tags" : "iwl-tags";
+				const countId = listName === "watchlist" ? "wl-count" : "iwl-count";
+				const symbols = _wlData[listName] || [];
+				const container = $(containerId);
+				$(countId).textContent = `${symbols.length} symbol${symbols.length !== 1 ? "s" : ""}`;
+
+				if (!symbols.length) {
+					container.innerHTML = '<span class="wl-loading">No symbols — add one above.</span>';
+					return;
+				}
+				container.innerHTML = symbols
+					.map(
+						(sym) =>
+							`<span class="wl-tag">
+								${sym}
+								<button class="wl-tag-remove" title="Remove ${sym}"
+									onclick="wlRemove('${listName}','${sym}')">×</button>
+							</span>`,
+					)
+					.join("");
+			}
+
+			async function loadWatchlistEditor() {
+				try {
+					const data = await apiFetch("/api/watchlists");
+					_wlData = data;
+					_renderWlTags("watchlist");
+					_renderWlTags("inverse_watchlist");
+				} catch (e) {
+					$("wl-tags").innerHTML = `<span class="wl-loading" style="color:var(--red)">Error loading</span>`;
+					$("iwl-tags").innerHTML = `<span class="wl-loading" style="color:var(--red)">Error loading</span>`;
+				}
+			}
+
+			async function wlAdd(listName) {
+				const inputId = listName === "watchlist" ? "wl-add-input" : "iwl-add-input";
+				const sym = $(inputId).value.trim().toUpperCase();
+				if (!sym) return;
+
+				// Optimistic UI update
+				if (!_wlData[listName].includes(sym)) {
+					_wlData[listName].push(sym);
+					_renderWlTags(listName);
+				}
+				$(inputId).value = "";
+
+				try {
+					const resp = await fetch("/api/watchlists", {
+						method: "POST",
+						headers: { "Content-Type": "application/json" },
+						body: JSON.stringify({ action: "add", symbol: sym, list_name: listName }),
+					});
+					if (!resp.ok) {
+						const err = await resp.json();
+						throw new Error(err.detail || resp.statusText);
+					}
+					_wlStatus(`✓ Added ${sym}`);
+				} catch (e) {
+					// Roll back optimistic update
+					_wlData[listName] = _wlData[listName].filter((s) => s !== sym);
+					_renderWlTags(listName);
+					_wlStatus(`Error: ${e.message}`, "var(--red)");
+				}
+			}
+
+			async function wlRemove(listName, sym) {
+				// Optimistic UI update
+				_wlData[listName] = _wlData[listName].filter((s) => s !== sym);
+				_renderWlTags(listName);
+
+				try {
+					const resp = await fetch("/api/watchlists", {
+						method: "POST",
+						headers: { "Content-Type": "application/json" },
+						body: JSON.stringify({ action: "remove", symbol: sym, list_name: listName }),
+					});
+					if (!resp.ok) {
+						const err = await resp.json();
+						throw new Error(err.detail || resp.statusText);
+					}
+					_wlStatus(`✓ Removed ${sym}`);
+				} catch (e) {
+					// Roll back optimistic update
+					_wlData[listName].push(sym);
+					_renderWlTags(listName);
+					_wlStatus(`Error: ${e.message}`, "var(--red)");
+				}
+			}
+
+			async function wlReset() {
+				if (!confirm("Reset both watchlists to the defaults defined in config.py?")) return;
+				try {
+					await fetch("/api/watchlists/reset", { method: "POST" });
+					await loadWatchlistEditor();
+					_wlStatus("✓ Watchlists reset to config.py defaults");
+				} catch (e) {
+					_wlStatus(`Error: ${e.message}`, "var(--red)");
+				}
+			}
+
+			// Allow pressing Enter in the add inputs
+			["wl-add-input", "iwl-add-input"].forEach((id) => {
+				const el = $(id);
+				if (el)
+					el.addEventListener("keydown", (e) => {
+						if (e.key === "Enter") {
+							const listName = id === "wl-add-input" ? "watchlist" : "inverse_watchlist";
+							wlAdd(listName);
+						}
+					});
+			});
+
+			// Load watchlist editor when Universe tab is clicked
+			document.querySelectorAll("#cfg-tabs .tab-btn").forEach((btn) => {
+				if (btn.dataset.tab === "cfg-universe") {
+					btn.addEventListener("click", loadWatchlistEditor);
+				}
+			});
+
+			// ── Symbol presets ──────────────────────────────────────────
+			const BT_PRESETS = {
+				watchlist: ["__ALL__"],
+				spy: ["SPY"],
+				tech: ["AAPL", "MSFT", "NVDA", "AMD", "META", "GOOGL", "AMZN", "TSLA", "AVGO", "CRM"],
+				custom: null,
+			};
+
+			let _btPreset = "watchlist";
+
+			// Wire preset buttons
+			document.querySelectorAll(".bt-preset").forEach((btn) => {
+				btn.addEventListener("click", () => {
+					document.querySelectorAll(".bt-preset").forEach((b) => b.classList.remove("active"));
+					btn.classList.add("active");
+					_btPreset = btn.dataset.preset;
+					$("bt-custom-row").style.display = _btPreset === "custom" ? "" : "none";
+				});
+			});
+
+			// Default dates: start = 1 year ago, end = today
+			(function setDefaultDates() {
+				const today = new Date();
+				const oneYearAgo = new Date(today);
+				oneYearAgo.setFullYear(today.getFullYear() - 1);
+				const fmt = (d) => d.toISOString().slice(0, 10);
+				$("bt-end").value = fmt(today);
+				$("bt-start").value = fmt(oneYearAgo);
+				$("bt-end").max = fmt(today);
+			})();
+
+			// ── Run ─────────────────────────────────────────────────────
+			async function runBacktest() {
+				const start = $("bt-start").value;
+				const end = $("bt-end").value;
+				const capital = parseFloat($("bt-capital").value) || 300;
+
+				if (!start || !end) {
+					alert("Please set start and end dates.");
+					return;
+				}
+				if (start >= end) {
+					alert("Start date must be before end date.");
+					return;
+				}
+
+				let symbols;
+				if (_btPreset === "custom") {
+					const raw = $("bt-custom-syms").value.trim();
+					if (!raw) {
+						alert("Enter at least one symbol.");
+						return;
+					}
+					symbols = raw
+						.toUpperCase()
+						.split(/[\s,]+/)
+						.filter(Boolean);
+				} else {
+					symbols = BT_PRESETS[_btPreset];
+				}
+
+				// UI: show progress, hide results
+				$("bt-run-btn").disabled = true;
+				$("bt-reset-btn").style.display = "none";
+				$("bt-results-wrap").style.display = "none";
+				$("bt-progress-wrap").style.display = "";
+				$("bt-log-box").innerHTML = "";
+				setBtBadge("running", "Running…");
+				setBtProgress(0, "Starting…");
+
+				try {
+					const resp = await fetch("/api/backtest/run", {
+						method: "POST",
+						headers: { "Content-Type": "application/json" },
+						body: JSON.stringify({ start, end, symbols, capital }),
+					});
+					if (!resp.ok) {
+						const err = await resp.json();
+						throw new Error(err.detail || resp.statusText);
+					}
+					// Start SSE stream for live progress
+					listenBtStream();
+				} catch (e) {
+					setBtBadge("error", "Error");
+					appendBtLog("ERROR: " + e.message);
+					$("bt-run-btn").disabled = false;
+					$("bt-reset-btn").style.display = "";
+				}
+			}
+
+			function listenBtStream() {
+				const es = new EventSource("/api/backtest/stream");
+				es.onmessage = async (ev) => {
+					const d = JSON.parse(ev.data);
+					if (d.msg) appendBtLog(d.msg);
+					setBtProgress(d.pct, d.msg || "");
+
+					if (d.state === "done") {
+						es.close();
+						setBtBadge("done", "Done");
+						await loadBtResults();
+						$("bt-run-btn").disabled = false;
+						$("bt-reset-btn").style.display = "";
+					} else if (d.state === "error") {
+						es.close();
+						setBtBadge("error", "Error");
+						$("bt-run-btn").disabled = false;
+						$("bt-reset-btn").style.display = "";
+					}
+				};
+				es.onerror = () => {
+					// Stream ended — poll status once to check final state
+					es.close();
+					setTimeout(async () => {
+						const s = await apiFetch("/api/backtest/status").catch(() => ({}));
+						if (s.state === "done") {
+							setBtBadge("done", "Done");
+							await loadBtResults();
+						} else if (s.state === "error") {
+							setBtBadge("error", "Error");
+							appendBtLog("Stream disconnected — check server logs.");
+						}
+						$("bt-run-btn").disabled = false;
+						$("bt-reset-btn").style.display = "";
+					}, 800);
+				};
+			}
+
+			// ── Load & render results ───────────────────────────────────
+			async function loadBtResults() {
+				try {
+					const { stats, trades, equity } = await apiFetch("/api/backtest/result");
+					renderBtKpis(stats);
+					renderBtEquityCurve(equity);
+					renderBtBreakdown(stats);
+					renderBtTrades(trades);
+					$("bt-results-wrap").style.display = "";
+					$("bt-results-period").textContent = `${stats.start_date} → ${stats.end_date}  ·  ${stats.trading_days} trading days`;
+				} catch (e) {
+					appendBtLog("Could not load results: " + e.message);
+				}
+			}
+
+			function renderBtKpis(s) {
+				const kpis = [
+					{ label: "Total Return", value: fmtPct(s.total_return_pct), cls: colorClass(s.total_return_pct) },
+					{ label: "Annual Return", value: fmtPct(s.annual_return_pct), cls: colorClass(s.annual_return_pct) },
+					{
+						label: "Max Drawdown",
+						value: fmtPct(s.max_drawdown_pct),
+						cls: s.max_drawdown_pct < -15 ? "neg" : s.max_drawdown_pct < -8 ? "warn" : "pos",
+					},
+					{ label: "Sharpe Ratio", value: fmtN(s.sharpe_ratio), cls: s.sharpe_ratio >= 1 ? "pos" : s.sharpe_ratio >= 0.5 ? "warn" : "neg" },
+					{ label: "Calmar Ratio", value: fmtN(s.calmar_ratio), cls: s.calmar_ratio >= 1 ? "pos" : "warn" },
+					{
+						label: "Profit Factor",
+						value: fmtN(s.profit_factor),
+						cls: s.profit_factor >= 1.5 ? "pos" : s.profit_factor >= 1 ? "warn" : "neg",
+					},
+					{ label: "Win Rate", value: fmtPct(s.win_rate_pct), cls: s.win_rate_pct >= 55 ? "pos" : s.win_rate_pct >= 45 ? "warn" : "neg" },
+					{ label: "Total Trades", value: s.total_trades, cls: "neu" },
+					{ label: "Avg Win", value: fmtPct(s.avg_win_pct), cls: "pos" },
+					{ label: "Avg Loss", value: fmtPct(s.avg_loss_pct), cls: "neg" },
+					{ label: "Avg Hold (days)", value: fmtN(s.avg_hold_days, 1), cls: "neu" },
+					{ label: "Final Equity", value: fmt$(s.final_equity), cls: colorClass(s.final_equity - s.initial_capital) },
+				];
+				$("bt-kpi-grid").innerHTML = kpis
+					.map(
+						(k) =>
+							`<div class="bt-kpi">
+						<div class="label">${k.label}</div>
+						<div class="value ${k.cls}">${k.value}</div>
+					</div>`,
+					)
+					.join("");
+			}
+
+			function renderBtEquityCurve(equity) {
+				const canvas = $("bt-equity-canvas");
+				if (!canvas || !equity || !equity.length) return;
+				const ctx = canvas.getContext("2d");
+				// Reuse the same draw function with backtest data
+				const dpr = window.devicePixelRatio || 1;
+				const rect = canvas.getBoundingClientRect();
+				canvas.width = rect.width * dpr;
+				canvas.height = rect.height * dpr;
+				ctx.scale(dpr, dpr);
+				drawEquityCurve(canvas, ctx, equity);
+			}
+
+			function renderBtBreakdown(s) {
+				const canvas = $("bt-breakdown-canvas");
+				if (!canvas) return;
+				const ctx = canvas.getContext("2d");
+				const dpr = window.devicePixelRatio || 1;
+				const rect = canvas.getBoundingClientRect();
+				canvas.width = rect.width * dpr;
+				canvas.height = rect.height * dpr;
+				ctx.scale(dpr, dpr);
+
+				const W = rect.width,
+					H = rect.height;
+				ctx.clearRect(0, 0, W, H);
+
+				// Bar chart: wins vs losses side by side
+				const wins = s.winners || 0;
+				const losses = s.losers || 0;
+				const total = wins + losses || 1;
+				const maxVal = Math.max(wins, losses, 1);
+
+				const barW = 60;
+				const gap = 20;
+				const padL = 50,
+					padR = 20,
+					padT = 20,
+					padB = 50;
+				const chartH = H - padT - padB;
+
+				// Y-axis gridlines
+				ctx.strokeStyle = "#21262d";
+				ctx.lineWidth = 1;
+				const steps = 4;
+				for (let i = 0; i <= steps; i++) {
+					const y = padT + (i / steps) * chartH;
+					ctx.beginPath();
+					ctx.moveTo(padL, y);
+					ctx.lineTo(W - padR, y);
+					ctx.stroke();
+					const v = Math.round(maxVal - (i / steps) * maxVal);
+					ctx.fillStyle = "#8b949e";
+					ctx.font = "10px system-ui";
+					ctx.textAlign = "right";
+					ctx.fillText(v, padL - 6, y + 3);
+				}
+
+				// Win bar
+				const winH = (wins / maxVal) * chartH;
+				const cx = W / 2;
+				const xWin = cx - barW - gap / 2;
+				const xLoss = cx + gap / 2;
+
+				ctx.fillStyle = "rgba(63,185,80,0.7)";
+				ctx.beginPath();
+				ctx.roundRect(xWin, padT + chartH - winH, barW, winH, [4, 4, 0, 0]);
+				ctx.fill();
+
+				const lossH = (losses / maxVal) * chartH;
+				ctx.fillStyle = "rgba(248,81,73,0.7)";
+				ctx.beginPath();
+				ctx.roundRect(xLoss, padT + chartH - lossH, barW, lossH, [4, 4, 0, 0]);
+				ctx.fill();
+
+				// Labels
+				ctx.font = "11px system-ui";
+				ctx.textAlign = "center";
+				ctx.fillStyle = "#3fb950";
+				ctx.fillText(`${wins} Wins`, xWin + barW / 2, padT + chartH - winH - 6);
+				ctx.fillStyle = "#f85149";
+				ctx.fillText(`${losses} Losses`, xLoss + barW / 2, padT + chartH - lossH - 6);
+
+				// Win rate line
+				const wrPct = s.win_rate_pct || 0;
+				ctx.fillStyle = "#8b949e";
+				ctx.font = "12px system-ui";
+				ctx.textAlign = "center";
+				ctx.fillText(`Win Rate: ${wrPct.toFixed(1)}%`, W / 2, H - 8);
+			}
+
+			function renderBtTrades(trades) {
+				const tbody = $("bt-trades-tbody");
+				$("bt-trade-count").textContent = `${trades.length} trade${trades.length !== 1 ? "s" : ""}`;
+				if (!trades.length) {
+					tbody.innerHTML = '<tr><td colspan="10" class="empty-state">No trades executed</td></tr>';
+					return;
+				}
+				// Show most recent first
+				tbody.innerHTML = [...trades]
+					.reverse()
+					.map((t) => {
+						const pc = colorClass(t.pnl);
+						return `<tr>
+						<td><strong>${t.symbol}</strong></td>
+						<td style="color:var(--muted);font-size:12px">${t.entry_date}</td>
+						<td style="color:var(--muted);font-size:12px">${t.exit_date}</td>
+						<td class="num">$${fmtN(t.entry_price)}</td>
+						<td class="num">$${fmtN(t.exit_price)}</td>
+						<td class="num">${fmtN(t.qty, t.qty % 1 === 0 ? 0 : 3)}</td>
+						<td class="num ${pc}">${t.pnl >= 0 ? "+" : ""}$${fmtN(t.pnl)}</td>
+						<td class="num ${pc}">${fmtPct(t.pnl_pct)}</td>
+						<td class="num">${t.hold_days}d</td>
+						<td style="color:var(--muted);font-size:11px;max-width:180px;overflow:hidden;text-overflow:ellipsis">${t.exit_reason}</td>
+					</tr>`;
+					})
+					.join("");
+			}
+
+			// ── UI helpers ──────────────────────────────────────────────
+			function setBtBadge(state, text) {
+				const badge = $("bt-status-badge");
+				badge.textContent = text;
+				badge.style.color =
+					state === "done" ? "var(--green)" : state === "error" ? "var(--red)" : state === "running" ? "var(--blue)" : "var(--muted)";
+				badge.style.borderColor =
+					state === "done" ? "var(--green)" : state === "error" ? "var(--red)" : state === "running" ? "var(--blue)" : "var(--border)";
+			}
+
+			function setBtProgress(pct, msg) {
+				$("bt-progress-fill").style.width = pct + "%";
+				$("bt-progress-pct").textContent = pct + "%";
+				if (msg) $("bt-progress-msg").textContent = msg;
+			}
+
+			function appendBtLog(msg) {
+				const box = $("bt-log-box");
+				const line = document.createElement("div");
+				const lower = msg.toLowerCase();
+				line.className = lower.includes("error")
+					? "log-error"
+					: lower.includes("warn")
+						? "log-warn"
+						: lower.includes("✓") || lower.includes("complete")
+							? "log-trade"
+							: "log-info";
+				line.textContent = msg;
+				box.appendChild(line);
+				box.scrollTop = box.scrollHeight;
+			}
+
+			function resetBacktest() {
+				$("bt-results-wrap").style.display = "none";
+				$("bt-progress-wrap").style.display = "none";
+				$("bt-log-box").innerHTML = "";
+				$("bt-reset-btn").style.display = "none";
+				$("bt-run-btn").disabled = false;
+				setBtBadge("idle", "Idle");
+			}
+		</script>
+	</body>
+</html>

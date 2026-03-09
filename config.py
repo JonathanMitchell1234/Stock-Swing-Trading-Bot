@@ -11,14 +11,24 @@ load_dotenv()
 # ─────────────────────────────────────────────
 # Alpaca API
 # ─────────────────────────────────────────────
-ALPACA_API_KEY = os.getenv("ALPACA_API_KEY", "")
-ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY", "")
+# Paper trading credentials (Alpaca paper account)
+PAPER_ALPACA_API_KEY    = os.getenv("ALPACA_API_KEY", "")
+PAPER_ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY", "")
+
+# Live trading credentials (separate key pair from Alpaca live account)
+LIVE_ALPACA_API_KEY    = os.getenv("LIVE_ALPACA_API_KEY", "")
+LIVE_ALPACA_SECRET_KEY = os.getenv("LIVE_ALPACA_SECRET_KEY", "")
+
 TRADING_MODE = os.getenv("TRADING_MODE", "paper")  # "paper" or "live"
 
 PAPER_BASE_URL = "https://paper-api.alpaca.markets"
-LIVE_BASE_URL = "https://api.alpaca.markets"
+LIVE_BASE_URL  = "https://api.alpaca.markets"
 
 BASE_URL = PAPER_BASE_URL if TRADING_MODE == "paper" else LIVE_BASE_URL
+
+# Active credentials — whichever mode is current
+ALPACA_API_KEY    = PAPER_ALPACA_API_KEY    if TRADING_MODE == "paper" else LIVE_ALPACA_API_KEY
+ALPACA_SECRET_KEY = PAPER_ALPACA_SECRET_KEY if TRADING_MODE == "paper" else LIVE_ALPACA_SECRET_KEY
 
 # ─────────────────────────────────────────────
 # Account Size & Fractional Shares
@@ -58,7 +68,7 @@ MACD_SIGNAL = 9
 # ATR (for stops and position sizing)
 ATR_PERIOD = 14
 ATR_STOP_MULTIPLIER = 3.0    # stop loss = entry − ATR * mult (wide to survive noise)
-ATR_PROFIT_MULTIPLIER = 6.0  # take profit = entry + ATR * mult (let winners run)
+ATR_PROFIT_MULTIPLIER = 7.0  # raised from 6.0 — let winners run further (improves profit factor)
 
 # Volume confirmation
 VOLUME_SMA_PERIOD = 20
@@ -76,16 +86,17 @@ MOMENTUM_SCORE_WEIGHT = 2       # bonus points for top-quartile momentum
 EMA_SLOPE_PERIOD = 5            # bars to measure EMA-50 slope direction
 
 # ── Dead-money exit: sell stagnant positions ────────────────
-DEAD_MONEY_DAYS = 10            # if position flat for this many trading days
-DEAD_MONEY_THRESHOLD = 0.02     # has moved less than 2% total
+DEAD_MONEY_DAYS = 7             # reduced from 10 — free up capital faster
+DEAD_MONEY_THRESHOLD = 0.015    # tightened from 2% — exit if < 1.5% move in 7 days
 
 # ── Cooldown: don't re-enter a symbol within N days of exit ──
 RE_ENTRY_COOLDOWN_DAYS = 5
 
-# ── Market regime filter (SPY-based) ────────────────────────
-MARKET_REGIME_ENABLED = True   # reject new buys in bear markets
-MARKET_REGIME_SYMBOL = "SPY"   # index proxy
-# Bull = SPY above its 200-EMA; Bear = below
+# ── Market regime filter (SPY SMA-200 based) ────────────────
+MARKET_REGIME_ENABLED = True    # reject new long buys in bear markets
+MARKET_REGIME_SYMBOL = "SPY"    # index proxy
+# Bull = SPY above its 200-day SMA; Bear = below (uses SMA, not EMA,
+# matching the industry-standard definition of a bull/bear market)
 
 # ── Multi-timeframe confirmation (weekly trend) ────────────
 WEEKLY_TREND_ENABLED = False    # disabled for small accounts (blocks momentum plays)
@@ -100,6 +111,30 @@ HIGH_VOL_THRESHOLD = 0.30       # annualized vol above 30% = high vol
 LOW_VOL_THRESHOLD = 0.12        # annualized vol below 12% = low vol
 HIGH_VOL_SIZE_SCALE = 0.80      # reduce position to 80% in high vol
 LOW_VOL_SIZE_SCALE = 1.15       # increase position to 115% in low vol
+
+# ── VIX-based fear filter ─────────────────────────────────
+# Uses VIXY (VIX proxy ETF) since Alpaca does not carry ^VIX directly.
+# VIXY tracks short-term VIX futures and is a reliable fear gauge.
+VIX_FILTER_ENABLED = True       # enable VIX-based position halting/sizing
+VIX_SYMBOL = "VIXY"             # VIX proxy available on Alpaca
+VIX_HALT_THRESHOLD = 35.0       # VIXY price above this → halt ALL new longs
+VIX_REDUCE_THRESHOLD = 22.0     # VIXY price above this → cut position size in half
+VIX_SIZE_SCALE = 0.50           # scale factor when VIXY > VIX_REDUCE_THRESHOLD
+
+# ── Inverse ETF bear-market mode ──────────────────────────
+# When the market regime turns bearish (SPY < SMA-200), the bot
+# switches to trading inverse ETFs instead of sitting in cash.
+# Entry/exit logic is identical — the same scoring system is used.
+# Size is reduced because inverse ETFs are more volatile instruments.
+INVERSE_ETF_MODE_ENABLED = True  # switch to inverse ETFs in bear markets
+INVERSE_ETF_SIZE_SCALE = 0.60    # trade at 60% of normal size (more volatile)
+INVERSE_WATCHLIST = [
+    "SQQQ",   # -3x Nasdaq (pairs with TQQQ/QQQ longs)
+    "SOXS",   # -3x Semiconductors (pairs with SOXL longs)
+    "SPXS",   # -3x S&P 500 (broad market short)
+    "SH",     # -1x S&P 500 (less volatile, safer bear play)
+    "PSQ",    # -1x Nasdaq (less volatile)
+]
 
 # ── Sector exposure limits ─────────────────────────────────
 MAX_PER_SECTOR = 99             # effectively disabled for testing
@@ -125,6 +160,10 @@ SECTOR_MAP = {
     "SPY": "ETF", "QQQ": "ETF", "IWM": "ETF", "XLF": "ETF",
     "XLE": "ETF", "XLK": "ETF", "TQQQ": "ETF", "SOXL": "ETF",
     "ARKK": "ETF", "VTI": "ETF", "VOO": "ETF", "DIA": "ETF",
+    # Inverse / volatility ETFs (bear-mode symbols)
+    "SQQQ": "InverseETF", "SOXS": "InverseETF", "SPXS": "InverseETF",
+    "SH": "InverseETF", "PSQ": "InverseETF",
+    "VIXY": "ETF",   # VIX proxy used for the fear filter
 }
 
 # ── Support / Resistance ───────────────────────────────────
@@ -249,3 +288,37 @@ def get_atr_profit_mult(equity: float) -> float:
     if equity < SMALL_ACCOUNT_THRESHOLD:
         return SMALL_ATR_PROFIT_MULTIPLIER
     return ATR_PROFIT_MULTIPLIER
+
+
+# ─────────────────────────────────────────────────────────────
+# Dashboard config overrides
+# When the bot is launched as a subprocess by the dashboard server,
+# any UI-saved config changes are injected as CFG_OVERRIDE_<KEY>=<value>
+# environment variables so the bot process sees the correct values.
+# ─────────────────────────────────────────────────────────────
+def _apply_env_overrides() -> None:
+    import ast
+    _prefix = "CFG_OVERRIDE_"
+    for env_key, env_val in os.environ.items():
+        if not env_key.startswith(_prefix):
+            continue
+        cfg_key = env_key[len(_prefix):]
+        if not hasattr(__import__(__name__), cfg_key):
+            continue
+        current = globals().get(cfg_key)
+        # Coerce string → correct Python type
+        try:
+            if isinstance(current, bool):
+                coerced = env_val.lower() in ("1", "true", "yes")
+            elif isinstance(current, int):
+                coerced = int(env_val)
+            elif isinstance(current, float):
+                coerced = float(env_val)
+            else:
+                coerced = env_val
+            globals()[cfg_key] = coerced
+        except (ValueError, TypeError):
+            pass
+
+
+_apply_env_overrides()

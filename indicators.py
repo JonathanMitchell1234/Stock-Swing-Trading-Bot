@@ -29,6 +29,9 @@ def compute_all(df: pd.DataFrame) -> pd.DataFrame:
     df["ema_trend"] = ta.trend.ema_indicator(df["close"], window=config.EMA_TREND)
     df["ema_200"] = ta.trend.ema_indicator(df["close"], window=200)
 
+    # ── Simple Moving Average (200-day, for regime filter) ───
+    df["sma_200"] = df["close"].rolling(window=200).mean()
+
     # ── RSI ──────────────────────────────────────────────────
     df["rsi"] = ta.momentum.rsi(df["close"], window=config.RSI_PERIOD)
 

@@ -105,7 +105,7 @@ class Backtester:
         symbols: List[str],
         start_date: dt.date,
         end_date: dt.date,
-        initial_capital: float = 100_000.0,
+        initial_capital: float = 300.0,
     ) -> None:
         self.symbols = symbols
         self.start_date = start_date
@@ -122,8 +122,11 @@ class Backtester:
         # Pre-fetched data: symbol → DataFrame
         self._data: Dict[str, pd.DataFrame] = {}
 
-        # Market-regime data (SPY EMA-200)
+        # Market-regime data (SPY SMA-200)
         self._regime_data: Optional[pd.DataFrame] = None
+
+        # VIX proxy data (VIXY)
+        self._vix_data: Optional[pd.DataFrame] = None
 
         # Cooldown tracker: symbol → last exit date
         self._cooldowns: Dict[str, dt.date] = {}
@@ -193,6 +196,48 @@ class Backtester:
                     log.info("Loaded regime filter: %s (%d bars)", regime_sym, len(rdf))
                 except Exception as exc:
                     log.warning("Failed to load regime data %s: %s", regime_sym, exc)
+
+        # Load VIX proxy data (VIXY) for the fear/volatility filter
+        if config.VIX_FILTER_ENABLED:
+            vix_sym = config.VIX_SYMBOL
+            if vix_sym in self._data:
+                self._vix_data = self._data[vix_sym]
+            else:
+                try:
+                    bars = api.get_bars(
+                        vix_sym, config.BAR_TIMEFRAME,
+                        start=warmup_start.isoformat(),
+                        end=self.end_date.isoformat(),
+                        limit=10_000,
+                    )
+                    vdf = bars.df.copy()
+                    vdf.index = pd.to_datetime(vdf.index)
+                    vdf = vdf[["open", "high", "low", "close", "volume"]]
+                    vdf = compute_all(vdf)
+                    self._vix_data = vdf
+                    log.info("Loaded VIX proxy: %s (%d bars)", vix_sym, len(vdf))
+                except Exception as exc:
+                    log.warning("Failed to load VIX proxy %s: %s", vix_sym, exc)
+
+        # Pre-load inverse ETFs if bear-mode is enabled (so they're ready to trade)
+        if config.INVERSE_ETF_MODE_ENABLED:
+            for sym in config.INVERSE_WATCHLIST:
+                if sym not in self._data:
+                    try:
+                        bars = api.get_bars(
+                            sym, config.BAR_TIMEFRAME,
+                            start=warmup_start.isoformat(),
+                            end=self.end_date.isoformat(),
+                            limit=10_000,
+                        )
+                        idf = bars.df.copy()
+                        idf.index = pd.to_datetime(idf.index)
+                        idf = idf[["open", "high", "low", "close", "volume"]]
+                        idf = compute_all(idf)
+                        self._data[sym] = idf
+                        log.info("Loaded inverse ETF: %s (%d bars)", sym, len(idf))
+                    except Exception as exc:
+                        log.warning("Failed to load inverse ETF %s: %s", sym, exc)
 
         if not self._data:
             log.error("No data loaded – cannot backtest")
@@ -272,17 +317,37 @@ class Backtester:
 
     # ── market regime check ──────────────────────────────────
     def _is_bull_market(self, date: dt.date) -> bool:
-        """Check if SPY is above its 200-EMA (bull market)."""
+        """Check if SPY is above its 200-day SMA (classic bull/bear definition)."""
         if not config.MARKET_REGIME_ENABLED or self._regime_data is None:
             return True  # default: allow trades
         mask = self._regime_data.index.date <= date
         if not mask.any():
             return True
         row = self._regime_data.loc[mask].iloc[-1]
-        ema_200 = row.get("ema_200", None)
-        if ema_200 is None or pd.isna(ema_200):
+        sma_200 = row.get("sma_200", None)
+        if sma_200 is None or pd.isna(sma_200):
             return True
-        return row["close"] > ema_200
+        return row["close"] > sma_200
+
+    # ── VIX fear-level helper ────────────────────────────────
+    def _vix_size_scale(self, date: dt.date) -> float:
+        """
+        Returns a position-size scale factor based on the VIX proxy (VIXY):
+          - VIXY > VIX_HALT_THRESHOLD  → 0.0  (no new entries at all)
+          - VIXY > VIX_REDUCE_THRESHOLD → VIX_SIZE_SCALE  (cut size in half)
+          - Otherwise                  → 1.0  (normal sizing)
+        """
+        if not config.VIX_FILTER_ENABLED or self._vix_data is None:
+            return 1.0
+        mask = self._vix_data.index.date <= date
+        if not mask.any():
+            return 1.0
+        vixy_price = float(self._vix_data.loc[mask].iloc[-1]["close"])
+        if vixy_price >= config.VIX_HALT_THRESHOLD:
+            return 0.0   # panic mode — no new trades
+        if vixy_price >= config.VIX_REDUCE_THRESHOLD:
+            return config.VIX_SIZE_SCALE  # elevated fear — cut size
+        return 1.0
 
     # ── momentum helper ──────────────────────────────────────
     def _compute_momentum(self, symbol: str, date: dt.date) -> float:
@@ -385,13 +450,21 @@ class Backtester:
     # ── strategy evaluation (v4 scoring + advanced filters) ──
     def _check_entry(self, df: pd.DataFrame, momentum: float = 0.0,
                       weekly_bullish: bool = True,
-                      score_threshold: int = 0) -> Optional[dict]:
-        """Scoring-based entry system with momentum bonus + v4 advanced filters."""
+                      score_threshold: int = 0,
+                      inverse_mode: bool = False) -> Optional[dict]:
+        """Scoring-based entry system with momentum bonus + v4 advanced filters.
+
+        When inverse_mode=True the scoring logic is inverted so that bearish
+        market conditions score positively (used for SQQQ/SPXS etc.).
+        """
         if len(df) < max(config.MOMENTUM_LOOKBACK + 1, config.EMA_SLOPE_PERIOD + 1, 3):
             return None
 
         cur = df.iloc[-1]
         prv = df.iloc[-2]
+
+        if inverse_mode:
+            return self._check_inverse_entry(df, cur, prv, momentum, score_threshold)
 
         price = cur["close"]
         ema_fast = cur["ema_fast"]
@@ -523,6 +596,109 @@ class Backtester:
             "atr": atr,
             "score": score,
             "reason": f"Score {score}: {', '.join(factors)}",
+        }
+
+    def _check_inverse_entry(self, df: pd.DataFrame, cur: pd.Series,
+                              prv: pd.Series, momentum: float,
+                              score_threshold: int) -> Optional[dict]:
+        """
+        Entry scoring for inverse ETFs (SQQQ, SPXS, SH, PSQ, SOXS).
+        Bearish market conditions score positively here — inverse ETFs go UP
+        when the market goes down, so we want to enter them when everything
+        looks bearish.
+        """
+        price = cur["close"]
+        ema_fast = cur["ema_fast"]
+        ema_slow = cur["ema_slow"]
+        ema_trend = cur["ema_trend"]
+        ema_200 = cur.get("ema_200", None)
+        rsi = cur["rsi"]
+        macd_hist = cur["macd_hist"]
+        adx = cur["adx"]
+        atr = cur["atr"]
+        vol_ratio = cur["vol_ratio"]
+        bb_mid = cur.get("bb_mid", None)
+
+        if pd.isna(rsi) or pd.isna(atr) or pd.isna(adx):
+            return None
+
+        # Gap-down filter: don't chase panic gaps DOWN in inverse ETFs
+        # (means the underlying already crashed — likely to snap back)
+        prev_close = prv["close"]
+        today_open = cur["open"]
+        if prev_close > 0 and today_open > 0:
+            gap_pct = (today_open - prev_close) / prev_close
+            if gap_pct < -config.GAP_UP_MAX_PCT:  # inverted: big gap down = skip
+                return None
+
+        score = 0
+        factors = []
+
+        # +2: Inverse ETF is in an uptrend (above its own EMA-50)
+        # This means the bear move is sustained, not just a 1-day spike
+        if price > ema_trend:
+            score += 2
+            factors.append("Inverse above EMA-50")
+
+        # +2: Bearish EMA crossover on the inverse ETF itself
+        if (prv["ema_fast"] <= prv["ema_slow"]) and (ema_fast > ema_slow):
+            score += 2
+            factors.append("EMA crossover (bear)")
+
+        # +1: EMA-50 of the inverse ETF is rising (trend gaining strength)
+        if len(df) >= config.EMA_SLOPE_PERIOD + 1:
+            ema_now = cur["ema_trend"]
+            ema_ago = df.iloc[-(config.EMA_SLOPE_PERIOD + 1)]["ema_trend"]
+            if not pd.isna(ema_now) and not pd.isna(ema_ago) and ema_now > ema_ago:
+                score += 1
+                factors.append("EMA-50 rising")
+
+        # +2: RSI in pullback zone on the inverse ETF (30-55) — it pulled back
+        # within the broader uptrend, giving a better entry
+        if 30 <= rsi <= 55:
+            score += 2
+            factors.append(f"RSI pullback ({rsi:.0f})")
+        elif 55 < rsi <= 65:
+            score += 1
+            factors.append(f"RSI mid ({rsi:.0f})")
+
+        # +1: MACD positive (inverse ETF gaining momentum)
+        if macd_hist > 0 or (prv["macd_hist"] < 0 and macd_hist > prv["macd_hist"]):
+            score += 1
+            factors.append("MACD+")
+
+        # +1: Volume above average (institutional selling = volume on inverse)
+        if vol_ratio >= config.VOLUME_SURGE_FACTOR:
+            score += 1
+            factors.append(f"Vol {vol_ratio:.1f}x")
+
+        # +1: ADX — bear trend has conviction
+        if adx > 20:
+            score += 1
+            factors.append(f"ADX {adx:.0f}")
+
+        # +1: Price near lower BB on the inverse ETF (pullback entry within uptrend)
+        if bb_mid is not None and not pd.isna(bb_mid) and price <= bb_mid:
+            score += 1
+            factors.append("Near BB lower")
+
+        # +2: Strong positive momentum on the inverse ETF itself
+        if momentum > 0.05:
+            score += config.MOMENTUM_SCORE_WEIGHT
+            factors.append(f"Momentum +{momentum*100:.0f}%")
+        elif momentum > 0.02:
+            score += 1
+            factors.append(f"Momentum +{momentum*100:.0f}%")
+
+        threshold = score_threshold if score_threshold > 0 else config.ENTRY_SCORE_THRESHOLD
+        if score < threshold:
+            return None
+
+        return {
+            "price": price,
+            "atr": atr,
+            "score": score,
+            "reason": f"[BEAR] Score {score}: {', '.join(factors)}",
         }
 
     def _check_exit(self, df: pd.DataFrame, entry_price: float = 0.0,
@@ -708,12 +884,41 @@ class Backtester:
         atr_stop_mult = config.get_atr_stop_mult(equity)
         atr_profit_mult = config.get_atr_profit_mult(equity)
         vol_scale = self._vol_regime_scale(date)
+        vix_scale = self._vix_size_scale(date)
         dyn_threshold = self._dynamic_score_threshold(date)
 
-        if len(self.positions) < max_positions and bull_market:
+        # VIX halt: if VIXY is in panic territory, block new LONG entries only.
+        # Inverse ETF entries are still allowed — panic = ideal short entry.
+        long_halted = (vix_scale == 0.0)
+        if long_halted and not config.INVERSE_ETF_MODE_ENABLED:
+            equity = self._portfolio_value(date)
+            self.equity_curve.append((date, equity))
+            return
+
+        # Determine which symbol pool to scan based on market regime
+        # Bear market OR VIX halt → switch to inverse ETFs
+        bear_mode = (not bull_market and config.INVERSE_ETF_MODE_ENABLED) or \
+                    (long_halted and config.INVERSE_ETF_MODE_ENABLED)
+        if bear_mode:
+            # Bear market: trade inverse ETFs only (no longs on regular stocks)
+            scan_symbols = [s for s in config.INVERSE_WATCHLIST if s in self._data]
+            # Apply extra size reduction for inverse ETF volatility
+            vol_scale = vol_scale * config.INVERSE_ETF_SIZE_SCALE
+            log.debug("Bear mode on %s (bull=%s, vix_halt=%s) — scanning inverse ETFs: %s",
+                      date, bull_market, long_halted, scan_symbols)
+        else:
+            # Bull market: trade the normal watchlist (exclude inverse ETFs)
+            scan_symbols = [
+                s for s in self.symbols
+                if s not in config.INVERSE_WATCHLIST
+            ]
+            # Apply VIX reduce-scale to longs if elevated fear
+            vix_scale = vix_scale  # already computed above (0.5 or 1.0)
+
+        if len(self.positions) < max_positions and (bull_market or bear_mode):
             # Phase 1: Gather candidates with momentum scores
             candidates = []
-            for symbol in self.symbols:
+            for symbol in scan_symbols:
                 if symbol in self.positions:
                     continue
 
@@ -767,13 +972,16 @@ class Backtester:
                     continue
 
                 # Multi-timeframe: weekly trend check (hard filter)
+                # Skip weekly filter for inverse ETFs — they move opposite to market
                 weekly_bull = self._is_weekly_bullish(symbol, date)
-                if config.WEEKLY_TREND_ENABLED and not weekly_bull:
+                is_inverse = symbol in config.INVERSE_WATCHLIST
+                if config.WEEKLY_TREND_ENABLED and not weekly_bull and not is_inverse:
                     continue  # skip entry when weekly trend disagrees
 
                 signal = self._check_entry(
                     df, momentum=mom, weekly_bullish=weekly_bull,
                     score_threshold=dyn_threshold,
+                    inverse_mode=is_inverse,
                 )
                 if signal is None:
                     continue
@@ -785,9 +993,10 @@ class Backtester:
 
                 qty = self._size_position(entry_price, stop_loss, date)
 
-                # Apply volatility regime scaling
-                if vol_scale != 1.0:
-                    qty = round(qty * vol_scale, 3) if config.FRACTIONAL_SHARES else math.floor(qty * vol_scale)
+                # Apply combined scale: volatility regime + VIX fear filter
+                combined_scale = vol_scale * vix_scale
+                if combined_scale != 1.0:
+                    qty = round(qty * combined_scale, 3) if config.FRACTIONAL_SHARES else math.floor(qty * combined_scale)
 
                 if qty <= 0:
                     continue
