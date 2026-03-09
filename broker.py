@@ -107,7 +107,7 @@ class AlpacaBroker:
                         side="sell",
                         type="stop",
                         stop_price=round(stop_loss, 2),
-                        time_in_force="gtc",
+                        time_in_force="day",
                     )
                 except Exception as exc:
                     log.warning("Stop-loss order failed for %s: %s", symbol, exc)
@@ -153,6 +153,86 @@ class AlpacaBroker:
             trail_percent=str(round(trail_pct * 100, 2)),
             time_in_force="gtc",
         )
+
+    def resubmit_stop_losses(self, pdt_guard) -> int:
+        """
+        Called once each morning after market open.
+
+        For every open position that does NOT already have a live stop or
+        trailing-stop order, resubmit a stop-loss at ATR-based distance from
+        the original entry price (or a fixed 5 % fallback).
+
+        Returns the number of stop-loss orders newly submitted.
+        """
+        from risk_manager import RiskManager
+
+        positions = self.get_positions()
+        if not positions:
+            log.info("Stop-loss refresh: no open positions")
+            return 0
+
+        # Build a set of symbols that already have a stop / trailing-stop order
+        open_orders = self.get_open_orders()
+        protected = {
+            o.symbol
+            for o in open_orders
+            if o.type in ("stop", "stop_limit", "trailing_stop") and o.side == "sell"
+        }
+
+        equity = self.get_equity()
+        n_pos = len(positions)
+        risk = RiskManager(equity, n_pos)
+        submitted = 0
+
+        for pos in positions:
+            symbol = pos.symbol
+            qty = float(pos.qty)
+            entry_price = float(pos.avg_entry_price)
+
+            if symbol in protected:
+                log.debug("Stop-loss refresh: %s already protected", symbol)
+                continue
+
+            # Try to compute ATR-based stop; fall back to fixed 5 %
+            stop_price: float | None = None
+            try:
+                df = self.get_bars(symbol)
+                if df is not None and len(df) >= 15:
+                    from indicators import compute_all
+                    df = compute_all(df)
+                    atr = float(df.iloc[-1].get("atr", 0) or 0)
+                    if atr > 0:
+                        stop_price = risk.compute_stop_loss(entry_price, atr)
+            except Exception as exc:
+                log.warning("Stop-loss refresh: cannot compute ATR for %s – %s", symbol, exc)
+
+            if stop_price is None or stop_price <= 0:
+                stop_price = round(entry_price * (1 - config.STOP_LOSS_ATR_MULT * 0.01), 2)
+
+            # Never place a stop above current price (position already in loss)
+            current_price = float(pos.current_price)
+            if stop_price >= current_price:
+                stop_price = round(current_price * 0.95, 2)
+
+            log.info(
+                "Stop-loss refresh: submitting stop for %s  qty=%.4f  stop=%.2f  entry=%.2f",
+                symbol, qty, stop_price, entry_price,
+            )
+            try:
+                self.api.submit_order(
+                    symbol=symbol,
+                    qty=qty,
+                    side="sell",
+                    type="stop",
+                    stop_price=round(stop_price, 2),
+                    time_in_force="day",
+                )
+                submitted += 1
+            except Exception as exc:
+                log.error("Stop-loss refresh failed for %s: %s", symbol, exc)
+
+        log.info("Stop-loss refresh: submitted %d new stop order(s)", submitted)
+        return submitted
 
     def cancel_all_orders(self):
         self.api.cancel_all_orders()

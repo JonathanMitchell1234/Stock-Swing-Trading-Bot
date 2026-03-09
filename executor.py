@@ -333,6 +333,39 @@ class TradeExecutor:
         return opened
 
     # ─────────────────────────────────────────────────────────
+    # MORNING TASKS – run once per day shortly after market open
+    # ─────────────────────────────────────────────────────────
+    def morning_tasks(self) -> None:
+        """
+        Housekeeping that should run once each trading day after market open:
+
+        1. Resubmit stop-loss orders that expired at yesterday's close
+           (fractional stop orders use time_in_force="day" and expire daily).
+        2. Clean up stale PDT ledger entries.
+        3. Log the day-trade budget remaining.
+        """
+        log.info("--- Morning tasks start ---")
+
+        # 1. Stop-loss resubmission
+        n = self.broker.resubmit_stop_losses(self.pdt)
+        if n:
+            log.info("Morning tasks: resubmitted %d stop-loss order(s)", n)
+
+        # 2. Ledger hygiene
+        active = {p.symbol for p in self.broker.get_positions()}
+        self.pdt.cleanup_stale(active)
+
+        # 3. PDT budget report
+        used = self.pdt._rolling_day_trade_count()
+        remaining = max(0, config.MAX_DAY_TRADES_ALLOWED - used)
+        log.info(
+            "Morning tasks: day-trade budget — %d used / %d allowed / %d remaining (rolling %d-day window)",
+            used, config.MAX_DAY_TRADES_ALLOWED, remaining, config.PDT_LOOKBACK_DAYS,
+        )
+
+        log.info("--- Morning tasks done ---")
+
+    # ─────────────────────────────────────────────────────────
     # FULL CYCLE
     # ─────────────────────────────────────────────────────────
     def run_cycle(self) -> None:

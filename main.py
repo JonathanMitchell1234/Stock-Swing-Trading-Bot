@@ -74,6 +74,7 @@ def run_once() -> None:
 def run_loop() -> None:
     """
     Run the bot in a continuous loop using `schedule`.
+    - Morning tasks (stop-loss refresh) fire once per day shortly after open
     - Exits are checked more frequently (every 15 min)
     - Full entry scans happen every 30 min
     """
@@ -86,6 +87,16 @@ def run_loop() -> None:
     log.info("=" * 60)
 
     executor = TradeExecutor()
+    _morning_done_date: list[dt.date] = [None]  # mutable container for closure
+
+    def morning_job():
+        today = dt.date.today()
+        if _morning_done_date[0] == today:
+            return  # already ran today
+        if executor.broker.is_market_open():
+            log.info("Running morning tasks for %s", today)
+            executor.morning_tasks()
+            _morning_done_date[0] = today
 
     def exit_check():
         if executor.broker.is_market_open():
@@ -96,10 +107,12 @@ def run_loop() -> None:
         executor.run_cycle()
 
     # Schedule jobs
+    schedule.every(5).minutes.do(morning_job)          # poll until market opens & runs once
     schedule.every(config.CHECK_EXITS_MINUTES).minutes.do(exit_check)
     schedule.every(config.SCAN_INTERVAL_MINUTES).minutes.do(full_cycle)
 
     # Run the first cycle immediately
+    morning_job()
     full_cycle()
 
     # Keep running
