@@ -158,6 +158,7 @@ class Backtester:
                     start=warmup_start.isoformat(),
                     end=self.end_date.isoformat(),
                     limit=10_000,
+                    feed=config.DATA_FEED,
                 )
                 df = bars.df.copy()
                 df.index = pd.to_datetime(df.index)
@@ -187,6 +188,7 @@ class Backtester:
                         start=warmup_start.isoformat(),
                         end=self.end_date.isoformat(),
                         limit=10_000,
+                        feed=config.DATA_FEED,
                     )
                     rdf = bars.df.copy()
                     rdf.index = pd.to_datetime(rdf.index)
@@ -209,6 +211,7 @@ class Backtester:
                         start=warmup_start.isoformat(),
                         end=self.end_date.isoformat(),
                         limit=10_000,
+                        feed=config.DATA_FEED,
                     )
                     vdf = bars.df.copy()
                     vdf.index = pd.to_datetime(vdf.index)
@@ -229,6 +232,7 @@ class Backtester:
                             start=warmup_start.isoformat(),
                             end=self.end_date.isoformat(),
                             limit=10_000,
+                            feed=config.DATA_FEED,
                         )
                         idf = bars.df.copy()
                         idf.index = pd.to_datetime(idf.index)

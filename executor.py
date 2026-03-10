@@ -224,6 +224,22 @@ class TradeExecutor:
             except Exception as exc:
                 log.warning("Market regime check failed: %s", exc)
 
+        # Load VIXY for ML macro context (if ML enabled)
+        vixy_df = None
+        if config.ML_ENABLED:
+            try:
+                from indicators import compute_all as _compute
+                # Ensure spy_df is loaded even if regime filter is off
+                if spy_df is None:
+                    spy_df = self.broker.get_bars(config.MARKET_REGIME_SYMBOL, limit=250)
+                    if spy_df is not None:
+                        spy_df = _compute(spy_df)
+                vixy_df = self.broker.get_bars(config.VIX_SYMBOL, limit=50)
+                if vixy_df is not None:
+                    vixy_df = _compute(vixy_df)
+            except Exception as exc:
+                log.warning("ML macro data load failed: %s", exc)
+
         # Advanced features: vol regime + dynamic threshold
         vol_scale = self._get_vol_regime_scale()
         dyn_threshold = self._get_dynamic_threshold(spy_df)
@@ -269,7 +285,8 @@ class TradeExecutor:
                 except Exception:
                     pass
 
-            signal = check_entry(c["df"], weekly_bullish=weekly_bull)
+            signal = check_entry(c["df"], weekly_bullish=weekly_bull,
+                                spy_df=spy_df, vixy_df=vixy_df)
             if signal is None:
                 continue
 

@@ -51,6 +51,17 @@ from logger import get_logger
 
 log = get_logger("strategy")
 
+# Lazy import — ml_model is only loaded when ML is enabled
+_ml_model = None
+
+def _get_ml_model():
+    """Lazy-load the ML model module to avoid import overhead when ML is disabled."""
+    global _ml_model
+    if _ml_model is None:
+        import ml_model as _m
+        _ml_model = _m
+    return _ml_model
+
 
 # ─────────────────────────────────────────────
 # ENTRY  (scoring system)
@@ -202,15 +213,55 @@ def compute_momentum(df: pd.DataFrame) -> float:
     return (cur_close - past_close) / past_close
 
 
-def check_entry(df: pd.DataFrame, weekly_bullish: bool = True) -> dict | None:
+def check_entry(df: pd.DataFrame, weekly_bullish: bool = True,
+                spy_df: pd.DataFrame | None = None,
+                vixy_df: pd.DataFrame | None = None) -> dict | None:
     """
-    Evaluate the latest bar using the scoring system.
+    Evaluate the latest bar using the scoring system + optional ML model.
+
+    When ML_ENABLED is True:
+      - "gate" mode: hand-crafted score must pass ML_MIN_SCORE AND
+        GBM probability must be >= ML_ENTRY_THRESHOLD
+      - "replace" mode: only GBM probability matters (score is still
+        computed and logged but not used as a gate)
+
+    When ML_ENABLED is False:
+      - Falls back to the original threshold-only behaviour.
+
     Return a signal dict if score meets threshold, else None.
     """
     score, factors = score_entry(df, weekly_bullish=weekly_bullish)
 
-    if score < config.ENTRY_SCORE_THRESHOLD:
-        return None
+    # ── ML-enhanced path ─────────────────────────────────────
+    if config.ML_ENABLED:
+        ml = _get_ml_model()
+        ml_prob = None
+
+        # In "gate" mode, require minimum hand-crafted score first
+        if config.ML_BLEND_MODE == "gate" and score < config.ML_MIN_SCORE:
+            return None
+
+        # Get ML prediction
+        if ml.is_available():
+            ml_prob = ml.predict_entry_proba(
+                df, idx=-1, weekly_bullish=weekly_bullish,
+                spy_df=spy_df, vixy_df=vixy_df,
+            )
+
+        if ml_prob is not None:
+            if ml_prob < config.ML_ENTRY_THRESHOLD:
+                log.debug("ML rejected: score=%d, prob=%.3f < threshold %.3f",
+                          score, ml_prob, config.ML_ENTRY_THRESHOLD)
+                return None
+            factors.append(f"ML prob={ml_prob:.2f}")
+        else:
+            # Model unavailable — fall back to hand-crafted threshold
+            if score < config.ENTRY_SCORE_THRESHOLD:
+                return None
+    else:
+        # ── Original path (no ML) ───────────────────────────
+        if score < config.ENTRY_SCORE_THRESHOLD:
+            return None
 
     cur = df.iloc[-1]
     price = cur["close"]
@@ -229,6 +280,8 @@ def check_entry(df: pd.DataFrame, weekly_bullish: bool = True) -> dict | None:
         "score": score,
         "reason": reason,
     }
+    if config.ML_ENABLED and ml_prob is not None:
+        signal["ml_prob"] = ml_prob
     log.info("ENTRY signal: price=%.2f  %s", price, reason)
     return signal
 

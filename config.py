@@ -238,12 +238,24 @@ MIN_AVG_VOLUME = 500_000  # relaxed for broader universe
 # ─────────────────────────────────────────────
 BARS_LOOKBACK = 100       # how many daily bars to fetch for analysis
 BAR_TIMEFRAME = "1Day"    # daily bars for swing trading
+DATA_FEED = "iex"         # "iex" (free) or "sip" (paid subscription)
 
 # ─────────────────────────────────────────────
 # Scheduling
 # ─────────────────────────────────────────────
 SCAN_INTERVAL_MINUTES = 30    # re-scan for entries every N minutes
 CHECK_EXITS_MINUTES = 15      # check exit signals every N minutes
+
+# ─────────────────────────────────────────────
+# Machine Learning (GBM entry model)
+# ─────────────────────────────────────────────
+ML_ENABLED = False              # set True after training a model
+ML_ENTRY_THRESHOLD = 0.40       # minimum GBM probability to enter (0-1)
+ML_MIN_SCORE = 3                # minimum hand-crafted score before consulting GBM
+ML_BLEND_MODE = "gate"          # "gate" = both score+ML must pass; "replace" = ML only
+ML_FORWARD_BARS = 5             # forward bars for label generation
+ML_MIN_GAIN_PCT = 0.03          # label = 1 if close ≥ entry × (1 + this) within forward bars
+ML_TRAINING_MONTHS = 24         # months of history to use for training
 
 # ─────────────────────────────────────────────
 # Logging

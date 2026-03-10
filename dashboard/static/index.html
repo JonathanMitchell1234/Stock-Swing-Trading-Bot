@@ -998,6 +998,118 @@
 				color: var(--red);
 			}
 
+			/* ── ML Model panel ─────────────────────────────────── */
+			.ml-grid {
+				display: grid;
+				grid-template-columns: 1fr 1fr;
+				gap: 16px;
+				padding: 16px 20px 20px;
+			}
+			@media (max-width: 700px) {
+				.ml-grid {
+					grid-template-columns: 1fr;
+				}
+			}
+			.ml-panel {
+				background: var(--card-bg);
+				border: 1px solid var(--border);
+				border-radius: 10px;
+				padding: 16px;
+			}
+			.ml-panel-title {
+				font-weight: 600;
+				font-size: 14px;
+				margin-bottom: 12px;
+			}
+			.ml-metric-row {
+				display: flex;
+				justify-content: space-between;
+				padding: 4px 0;
+				font-size: 12px;
+				border-bottom: 1px solid var(--border);
+			}
+			.ml-metric-row:last-child {
+				border-bottom: none;
+			}
+			.ml-metric-label {
+				color: var(--muted);
+			}
+			.ml-metric-value {
+				font-weight: 600;
+				font-family: var(--mono);
+			}
+			.ml-bar-container {
+				display: flex;
+				align-items: center;
+				gap: 8px;
+				padding: 3px 0;
+				font-size: 11px;
+			}
+			.ml-bar-name {
+				width: 130px;
+				text-align: right;
+				color: var(--muted);
+				overflow: hidden;
+				text-overflow: ellipsis;
+				white-space: nowrap;
+			}
+			.ml-bar-track {
+				flex: 1;
+				height: 10px;
+				background: var(--border);
+				border-radius: 5px;
+				overflow: hidden;
+			}
+			.ml-bar-fill {
+				height: 100%;
+				background: var(--accent);
+				border-radius: 5px;
+				transition: width 0.3s;
+			}
+			.ml-bar-val {
+				width: 45px;
+				font-family: var(--mono);
+				color: var(--muted);
+			}
+			.ml-train-btn {
+				padding: 8px 18px;
+				border-radius: 8px;
+				font-size: 13px;
+				font-weight: 600;
+				border: none;
+				cursor: pointer;
+				background: var(--accent);
+				color: #fff;
+				transition: opacity 0.15s;
+			}
+			.ml-train-btn:hover {
+				opacity: 0.85;
+			}
+			.ml-train-btn:disabled {
+				opacity: 0.4;
+				cursor: not-allowed;
+			}
+			.ml-status-text {
+				font-size: 12px;
+				color: var(--muted);
+				margin-top: 8px;
+			}
+			.ml-enabled-badge {
+				display: inline-block;
+				padding: 2px 8px;
+				border-radius: 6px;
+				font-size: 11px;
+				font-weight: 600;
+			}
+			.ml-enabled-badge.on {
+				background: rgba(76, 175, 80, 0.15);
+				color: var(--green);
+			}
+			.ml-enabled-badge.off {
+				background: rgba(158, 158, 158, 0.15);
+				color: var(--muted);
+			}
+
 			/* ── Bot control panel ─────────────────────────────────── */
 			.bot-control-grid {
 				display: grid;
@@ -1877,7 +1989,66 @@
 				</div>
 			</div>
 
-			<!-- Row 7: Backtester ─────────────────────────────────── -->
+			<!-- Row 7: ML Model ───────────────────────────────────── -->
+			<div class="card" id="ml-card">
+				<div class="card-header">
+					<span class="card-title">🧠 ML Model (GBM)</span>
+					<div style="display: flex; gap: 8px; align-items: center">
+						<span id="ml-enabled-badge" class="ml-enabled-badge off">Disabled</span>
+						<button class="refresh-btn" onclick="loadMLStatus()">↻</button>
+					</div>
+				</div>
+				<div class="ml-grid">
+					<!-- Left: Model Info + Training ────── -->
+					<div class="ml-panel">
+						<div class="ml-panel-title">Model Status</div>
+						<div class="ml-metric-row">
+							<span class="ml-metric-label">Model loaded</span><span class="ml-metric-value" id="ml-loaded">—</span>
+						</div>
+						<div class="ml-metric-row">
+							<span class="ml-metric-label">Last trained</span><span class="ml-metric-value" id="ml-trained-at">—</span>
+						</div>
+						<div class="ml-metric-row">
+							<span class="ml-metric-label">Samples</span><span class="ml-metric-value" id="ml-samples">—</span>
+						</div>
+						<div class="ml-metric-row">
+							<span class="ml-metric-label">Class balance</span><span class="ml-metric-value" id="ml-balance">—</span>
+						</div>
+						<div style="margin-top: 6px"></div>
+						<div class="ml-panel-title">CV Metrics (avg)</div>
+						<div class="ml-metric-row"><span class="ml-metric-label">AUC</span><span class="ml-metric-value" id="ml-auc">—</span></div>
+						<div class="ml-metric-row">
+							<span class="ml-metric-label">Accuracy</span><span class="ml-metric-value" id="ml-accuracy">—</span>
+						</div>
+						<div class="ml-metric-row">
+							<span class="ml-metric-label">Precision</span><span class="ml-metric-value" id="ml-precision">—</span>
+						</div>
+						<div class="ml-metric-row">
+							<span class="ml-metric-label">Recall</span><span class="ml-metric-value" id="ml-recall">—</span>
+						</div>
+						<div class="ml-metric-row"><span class="ml-metric-label">F1</span><span class="ml-metric-value" id="ml-f1">—</span></div>
+						<div class="ml-metric-row">
+							<span class="ml-metric-label">Log Loss</span><span class="ml-metric-value" id="ml-logloss">—</span>
+						</div>
+
+						<div style="margin-top: 14px; display: flex; gap: 10px; align-items: center">
+							<button class="ml-train-btn" id="ml-train-btn" onclick="trainML()">🚀 Train Model</button>
+							<button class="ml-train-btn" style="background: var(--muted)" onclick="reloadML()">🔄 Reload</button>
+						</div>
+						<div class="ml-status-text" id="ml-train-status"></div>
+					</div>
+
+					<!-- Right: Feature Importance ─────── -->
+					<div class="ml-panel">
+						<div class="ml-panel-title">Top Feature Importances</div>
+						<div id="ml-feature-bars">
+							<div style="color: var(--muted); font-size: 12px; padding: 20px 0; text-align: center">No model trained yet</div>
+						</div>
+					</div>
+				</div>
+			</div>
+
+			<!-- Row 8: Backtester ─────────────────────────────────── -->
 			<div class="card" id="backtest-card">
 				<div class="card-header">
 					<span class="card-title">⏱ Backtester</span>
@@ -2489,6 +2660,9 @@
 					if (dot && dot.classList.contains("running")) _startBotStream(m);
 				});
 
+				// ML model status
+				loadMLStatus();
+
 				// Start live stream
 				startSSE();
 
@@ -2756,6 +2930,121 @@
 				} catch (e) {
 					$("cfg-save-status").textContent = "Error: " + e.message;
 					$("cfg-save-status").style.color = "var(--red)";
+				}
+			}
+
+			/* ═══════════════════════════════════════════════════════════
+			   ML MODEL (GBM)
+			   ═══════════════════════════════════════════════════════════ */
+
+			let _mlPollTimer = null;
+
+			async function loadMLStatus() {
+				try {
+					const r = await fetch("/api/ml/status");
+					const d = await r.json();
+
+					// Enabled badge
+					const badge = $("ml-enabled-badge");
+					if (d.ml_enabled) {
+						badge.textContent = "Enabled";
+						badge.className = "ml-enabled-badge on";
+					} else {
+						badge.textContent = "Disabled";
+						badge.className = "ml-enabled-badge off";
+					}
+
+					$("ml-loaded").textContent = d.model_loaded ? "✅ Yes" : "❌ No";
+
+					const meta = d.meta;
+					if (meta) {
+						const trained = meta.trained_at ? new Date(meta.trained_at).toLocaleString() : "—";
+						$("ml-trained-at").textContent = trained;
+						$("ml-samples").textContent = (meta.n_samples || 0).toLocaleString();
+						const pos = meta.n_positive || 0;
+						const neg = meta.n_negative || 0;
+						const total = pos + neg;
+						$("ml-balance").textContent =
+							total > 0 ? `${((pos / total) * 100).toFixed(1)}% pos / ${((neg / total) * 100).toFixed(1)}% neg` : "—";
+
+						const avg = meta.avg_metrics || {};
+						$("ml-auc").textContent = avg.auc != null ? avg.auc.toFixed(3) : "—";
+						$("ml-accuracy").textContent = avg.accuracy != null ? (avg.accuracy * 100).toFixed(1) + "%" : "—";
+						$("ml-precision").textContent = avg.precision != null ? (avg.precision * 100).toFixed(1) + "%" : "—";
+						$("ml-recall").textContent = avg.recall != null ? (avg.recall * 100).toFixed(1) + "%" : "—";
+						$("ml-f1").textContent = avg.f1 != null ? avg.f1.toFixed(3) : "—";
+						$("ml-logloss").textContent = avg.logloss != null ? avg.logloss.toFixed(4) : "—";
+
+						// Feature importance bars
+						const imp = meta.feature_importance || {};
+						const entries = Object.entries(imp);
+						if (entries.length > 0) {
+							const top15 = entries.slice(0, 15);
+							const maxVal = top15[0][1];
+							let html = "";
+							for (const [name, val] of top15) {
+								const pct = maxVal > 0 ? (val / maxVal) * 100 : 0;
+								html += `<div class="ml-bar-container">
+									<span class="ml-bar-name">${name}</span>
+									<div class="ml-bar-track"><div class="ml-bar-fill" style="width:${pct.toFixed(1)}%"></div></div>
+									<span class="ml-bar-val">${val}</span>
+								</div>`;
+							}
+							$("ml-feature-bars").innerHTML = html;
+						}
+					} else {
+						$("ml-trained-at").textContent = "—";
+						$("ml-samples").textContent = "—";
+						$("ml-balance").textContent = "—";
+						["ml-auc", "ml-accuracy", "ml-precision", "ml-recall", "ml-f1", "ml-logloss"].forEach((id) => ($(id).textContent = "—"));
+					}
+
+					// Training status
+					if (d.training) {
+						$("ml-train-btn").disabled = true;
+						$("ml-train-status").textContent = d.training_status || "Training…";
+						// Start polling if not already
+						if (!_mlPollTimer) {
+							_mlPollTimer = setInterval(loadMLStatus, 3000);
+						}
+					} else {
+						$("ml-train-btn").disabled = false;
+						if (d.training_status) {
+							$("ml-train-status").textContent = d.training_status;
+						}
+						// Stop polling
+						if (_mlPollTimer) {
+							clearInterval(_mlPollTimer);
+							_mlPollTimer = null;
+						}
+					}
+				} catch (e) {
+					console.warn("ML status error:", e);
+				}
+			}
+
+			async function trainML() {
+				if (!confirm("Train the GBM model? This downloads data for all watchlist symbols and may take several minutes.")) return;
+				$("ml-train-btn").disabled = true;
+				$("ml-train-status").textContent = "Starting…";
+				try {
+					await fetch("/api/ml/train", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+					// Start polling
+					_mlPollTimer = setInterval(loadMLStatus, 3000);
+				} catch (e) {
+					$("ml-train-status").textContent = "Error: " + e.message;
+					$("ml-train-btn").disabled = false;
+				}
+			}
+
+			async function reloadML() {
+				try {
+					const r = await fetch("/api/ml/reload", { method: "POST" });
+					const d = await r.json();
+					$("ml-train-status").textContent = d.model_loaded ? "Model reloaded ✅" : "No model file found";
+					loadMLStatus();
+				} catch (e) {
+					$("ml-train-status").textContent = "Error: " + e.message;
 				}
 			}
 

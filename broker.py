@@ -264,6 +264,7 @@ class AlpacaBroker:
             timeframe,
             start=start_date,
             limit=limit,
+            feed=config.DATA_FEED,
         )
         df = bars.df.copy()
 

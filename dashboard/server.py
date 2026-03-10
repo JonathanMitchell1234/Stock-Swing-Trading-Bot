@@ -210,7 +210,8 @@ async def get_regime():
         import datetime as _dt
         spy_start = (_dt.date.today() - _dt.timedelta(days=380)).isoformat()
         bars = api.get_bars("SPY", config.BAR_TIMEFRAME,
-                            start=spy_start, limit=10_000)
+                            start=spy_start, limit=10_000,
+                            feed=config.DATA_FEED)
         spy_df = _bars_to_df(bars, "SPY")
         spy_df = compute_all(spy_df)
 
@@ -229,7 +230,8 @@ async def get_regime():
             try:
                 vix_start = (_dt.date.today() - _dt.timedelta(days=5)).isoformat()
                 vbars = api.get_bars(config.VIX_SYMBOL, config.BAR_TIMEFRAME,
-                                     start=vix_start, limit=10_000)
+                                     start=vix_start, limit=10_000,
+                                     feed=config.DATA_FEED)
                 vix_df = _bars_to_df(vbars, config.VIX_SYMBOL)
                 vixy_level  = round(_safe_float(vix_df.iloc[-1]["close"]), 2)
                 long_halted = vixy_level >= config.VIX_HALT_THRESHOLD
@@ -273,7 +275,8 @@ async def get_watchlist():
         for sym in symbols:
             try:
                 bars = api.get_bars(sym, config.BAR_TIMEFRAME,
-                                    start=wl_start, limit=10_000)
+                                    start=wl_start, limit=10_000,
+                                    feed=config.DATA_FEED)
                 df   = _bars_to_df(bars, sym)
                 df   = compute_all(df)
                 row  = df.iloc[-1]
@@ -483,6 +486,12 @@ _CONFIG_EDITABLE_KEYS = {
     "MAX_PER_SECTOR",
     # PDT
     "MAX_DAY_TRADES_ALLOWED", "PDT_LOOKBACK_DAYS",
+    # Machine Learning
+    "ML_ENABLED", "ML_ENTRY_THRESHOLD", "ML_MIN_SCORE",
+    "ML_BLEND_MODE", "ML_FORWARD_BARS",
+    "ML_MIN_GAIN_PCT", "ML_TRAINING_MONTHS",
+    # Data feed
+    "DATA_FEED",
 }
 
 
@@ -742,6 +751,111 @@ async def reset_watchlists():
         CONFIG_OVERRIDES_PATH.unlink()
     importlib.reload(config)
     return {"ok": True}
+
+
+# ─────────────────────────────────────────────────────────────
+# ML model endpoints  (train / status / feature importance)
+# ─────────────────────────────────────────────────────────────
+
+_ml_training = False
+_ml_training_status: Optional[str] = None
+
+
+@app.get("/api/ml/status")
+async def ml_status():
+    """
+    Return the ML model status: loaded, training metrics, last trained, etc.
+    """
+    import ml_model
+    meta = ml_model.get_meta()
+    model_loaded = ml_model.is_available()
+    return {
+        "ml_enabled":     config.ML_ENABLED,
+        "model_loaded":   model_loaded,
+        "training":       _ml_training,
+        "training_status": _ml_training_status,
+        "meta":           meta,
+    }
+
+
+@app.get("/api/ml/features")
+async def ml_features():
+    """Return feature importance data for the loaded model."""
+    import ml_model
+    meta = ml_model.get_meta()
+    if meta is None:
+        raise HTTPException(status_code=404, detail="No trained model found")
+    return {
+        "feature_importance": meta.get("feature_importance", {}),
+        "feature_names": meta.get("feature_names", []),
+        "avg_metrics": meta.get("avg_metrics", {}),
+    }
+
+
+class MLTrainRequest(BaseModel):
+    months: Optional[int] = None
+    forward_bars: Optional[int] = None
+    min_gain_pct: Optional[float] = None
+    symbols: Optional[List[str]] = None
+
+
+def _ml_train_background(req: MLTrainRequest) -> None:
+    """Background thread that runs the full ML training pipeline."""
+    global _ml_training, _ml_training_status
+    try:
+        from ml_trainer import run_training
+        import ml_model
+
+        _ml_training_status = "Loading data…"
+        meta = run_training(
+            symbols=req.symbols,
+            months=req.months or config.ML_TRAINING_MONTHS,
+            forward_bars=req.forward_bars or config.ML_FORWARD_BARS,
+            min_gain_pct=req.min_gain_pct or config.ML_MIN_GAIN_PCT,
+        )
+
+        # Reload model in the inference cache
+        ml_model.reload_model()
+
+        avg = meta.get("avg_metrics", {})
+        _ml_training_status = (
+            f"Done — AUC={avg.get('auc', 0):.3f}  "
+            f"F1={avg.get('f1', 0):.3f}  "
+            f"({meta.get('n_samples', 0)} samples)"
+        )
+    except Exception as exc:
+        _ml_training_status = f"Error: {exc}"
+        import traceback; traceback.print_exc()
+    finally:
+        _ml_training = False
+
+
+@app.post("/api/ml/train")
+async def ml_train(req: MLTrainRequest = MLTrainRequest()):
+    """
+    Kick off ML model training in a background thread.
+    Returns immediately — poll /api/ml/status to monitor.
+    """
+    global _ml_training, _ml_training_status
+
+    if _ml_training:
+        raise HTTPException(status_code=409, detail="Training already in progress")
+
+    _ml_training = True
+    _ml_training_status = "Starting…"
+
+    t = threading.Thread(target=_ml_train_background, args=(req,), daemon=True)
+    t.start()
+
+    return {"ok": True, "message": "Training started in background"}
+
+
+@app.post("/api/ml/reload")
+async def ml_reload():
+    """Reload the ML model from disk (after external training)."""
+    import ml_model
+    loaded = ml_model.reload_model()
+    return {"ok": True, "model_loaded": loaded}
 
 
 # ─────────────────────────────────────────────────────────────
