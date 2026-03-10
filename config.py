@@ -295,7 +295,48 @@ def get_atr_profit_mult(equity: float) -> float:
 # When the bot is launched as a subprocess by the dashboard server,
 # any UI-saved config changes are injected as CFG_OVERRIDE_<KEY>=<value>
 # environment variables so the bot process sees the correct values.
+#
+# When run standalone (python main.py), we also load config_overrides.json
+# directly so that dashboard-saved settings are always respected.
 # ─────────────────────────────────────────────────────────────
+def _apply_file_overrides() -> None:
+    """Load config_overrides.json if it exists and apply values to this module."""
+    import ast
+    overrides_path = os.path.join(os.path.dirname(__file__), "config_overrides.json")
+    if not os.path.isfile(overrides_path):
+        return
+    try:
+        with open(overrides_path) as f:
+            overrides = json.load(f)
+    except Exception:
+        return
+
+    for key, val in overrides.items():
+        # Skip special keys (lists handled separately)
+        if key.startswith("__") and key.endswith("__"):
+            # Handle __WATCHLIST__ and __INVERSE_WATCHLIST__
+            clean_key = key.strip("_")
+            if clean_key in ("WATCHLIST", "INVERSE_WATCHLIST") and isinstance(val, list):
+                globals()[clean_key] = val
+            continue
+        # Only override keys that already exist in this module
+        if key not in globals():
+            continue
+        current = globals()[key]
+        try:
+            if isinstance(current, bool):
+                coerced = val if isinstance(val, bool) else str(val).lower() in ("1", "true", "yes")
+            elif isinstance(current, int):
+                coerced = int(val)
+            elif isinstance(current, float):
+                coerced = float(val)
+            else:
+                coerced = val
+            globals()[key] = coerced
+        except (ValueError, TypeError):
+            pass
+
+
 def _apply_env_overrides() -> None:
     import ast
     _prefix = "CFG_OVERRIDE_"
@@ -321,4 +362,7 @@ def _apply_env_overrides() -> None:
             pass
 
 
+# Apply file overrides first, then env overrides (env takes priority)
+import json
+_apply_file_overrides()
 _apply_env_overrides()

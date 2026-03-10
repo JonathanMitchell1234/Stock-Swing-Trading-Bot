@@ -24,7 +24,7 @@ class TradeExecutor:
 
     def __init__(self) -> None:
         self.broker = AlpacaBroker()
-        self.pdt = PDTGuard()
+        self.pdt = PDTGuard(broker=self.broker)
         self.screener = Screener(self.broker)
         self._init_risk_manager()
         self._sector_counts: dict[str, int] = {}

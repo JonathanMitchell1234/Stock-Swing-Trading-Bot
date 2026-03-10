@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import signal
 import sys
 import time
 
@@ -23,6 +24,27 @@ from executor import TradeExecutor
 from logger import get_logger
 
 log = get_logger("main")
+
+# Global reference for graceful shutdown
+_executor: TradeExecutor | None = None
+
+
+def _graceful_shutdown(signum, frame):
+    """Save PDT ledger and exit cleanly on SIGTERM/SIGINT."""
+    sig_name = signal.Signals(signum).name if hasattr(signal, "Signals") else str(signum)
+    log.info("Received %s – saving PDT ledger and shutting down...", sig_name)
+    if _executor is not None:
+        try:
+            _executor.pdt._save()
+            log.info("PDT ledger saved successfully")
+        except Exception as exc:
+            log.error("Failed to save PDT ledger: %s", exc)
+    sys.exit(0)
+
+
+# Register signal handlers
+signal.signal(signal.SIGTERM, _graceful_shutdown)
+signal.signal(signal.SIGINT, _graceful_shutdown)
 
 
 def print_status() -> None:
@@ -65,9 +87,10 @@ def print_status() -> None:
 
 def run_once() -> None:
     """Run a single scan cycle."""
+    global _executor
     log.info("Running single cycle...")
-    executor = TradeExecutor()
-    executor.run_cycle()
+    _executor = TradeExecutor()
+    _executor.run_cycle()
     log.info("Single cycle complete.")
 
 
@@ -84,9 +107,14 @@ def run_loop() -> None:
     log.info("  Watchlist: %d symbols", len(config.WATCHLIST))
     log.info("  Entry scan every %d min", config.SCAN_INTERVAL_MINUTES)
     log.info("  Exit check every %d min", config.CHECK_EXITS_MINUTES)
+    log.info("  RE_ENTRY_COOLDOWN_DAYS: %d", config.RE_ENTRY_COOLDOWN_DAYS)
+    log.info("  MAX_DAY_TRADES_ALLOWED: %d", config.MAX_DAY_TRADES_ALLOWED)
+    log.info("  PDT_LOOKBACK_DAYS: %d", config.PDT_LOOKBACK_DAYS)
     log.info("=" * 60)
 
     executor = TradeExecutor()
+    global _executor
+    _executor = executor
     _morning_done_date: list[dt.date] = [None]  # mutable container for closure
 
     def morning_job():

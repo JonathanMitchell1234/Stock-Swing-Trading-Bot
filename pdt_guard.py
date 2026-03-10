@@ -13,12 +13,14 @@ How it works
 ------------
 1.  Maintains a local JSON ledger of every BUY fill with the fill date,
     plus a list of completed day-trade timestamps.
-2.  Before any SELL, checks:
+2.  On startup, reconciles the local ledger against Alpaca's actual order
+    history so that sells/day-trades are never lost across restarts.
+3.  Before any SELL, checks:
     - Was this position opened today?  If yes, count it as a day trade.
     - Have we already used MAX_DAY_TRADES_ALLOWED day trades this window?
       If yes → block the sell.
-3.  Before any BUY, checks whether an open sell order for that symbol
-    already exists today (reverse day-trade).
+4.  Before any BUY, checks whether an open sell order for that symbol
+    already exists today (reverse day-trade) and enforces the cooldown.
 """
 
 from __future__ import annotations
@@ -27,7 +29,7 @@ import datetime as dt
 import json
 import os
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import config
 from logger import get_logger
@@ -40,12 +42,15 @@ LEDGER_PATH = Path("logs/pdt_ledger.json")
 class PDTGuard:
     """Enforces the PDT day-trade limit."""
 
-    def __init__(self) -> None:
+    def __init__(self, broker=None) -> None:
         self._ledger: Dict[str, str] = {}           # symbol → buy_date (ISO str)
         self._buy_times: Dict[str, str] = {}         # symbol → buy datetime ISO str (for min-hold check)
         self._day_trades: List[str] = []             # list of ISO date strings of day trades made
         self._sell_dates: Dict[str, str] = {}        # symbol → last sell_date (ISO str)
         self._load()
+        # Reconcile against Alpaca's actual order history
+        if broker is not None:
+            self._reconcile_from_alpaca(broker)
 
     # ── persistence ──────────────────────────────────────────
     def _load(self) -> None:
@@ -74,6 +79,117 @@ class PDTGuard:
                 "sell_dates": self._sell_dates,
                 "buy_times": self._buy_times,
             }, f, indent=2)
+
+    # ── reconciliation from Alpaca ────────────────────────────
+    def _reconcile_from_alpaca(self, broker) -> None:
+        """
+        Scan Alpaca's recent closed orders to rebuild sell_dates,
+        day_trades, and buy ledger.  This ensures nothing is lost
+        across bot restarts or crashes.
+
+        We look back far enough to cover the PDT window + cooldown.
+        """
+        try:
+            lookback_days = max(config.PDT_LOOKBACK_DAYS, config.RE_ENTRY_COOLDOWN_DAYS) + 5
+            # Walk back business days to get a calendar-day cutoff
+            cutoff = dt.date.today()
+            bdays = 0
+            while bdays < lookback_days:
+                cutoff -= dt.timedelta(days=1)
+                if cutoff.weekday() < 5:
+                    bdays += 1
+            after_dt = dt.datetime.combine(cutoff, dt.time.min)
+
+            orders = broker.get_closed_orders(after=after_dt, limit=500)
+            if not orders:
+                log.info("PDT reconcile: no closed orders returned from Alpaca")
+                return
+
+            # Group filled orders by (symbol, date, side)
+            # We need to detect: which symbols were sold on which dates,
+            # and which of those sells were day trades (buy + sell same day).
+            buys_by_sym_date: Dict[str, Dict[str, str]] = {}   # symbol → {date_str: fill_time_iso}
+            sells_by_sym_date: Dict[str, Dict[str, str]] = {}  # symbol → {date_str: fill_time_iso}
+
+            for o in orders:
+                if o.status != "filled":
+                    continue
+                sym = o.symbol
+                filled_at = o.filled_at
+                if filled_at is None:
+                    continue
+                # Parse fill time — Alpaca returns ISO 8601 strings
+                if isinstance(filled_at, str):
+                    fill_dt = dt.datetime.fromisoformat(filled_at.replace("Z", "+00:00"))
+                else:
+                    fill_dt = filled_at
+                fill_date_str = fill_dt.date().isoformat()
+
+                if o.side == "buy":
+                    buys_by_sym_date.setdefault(sym, {})[fill_date_str] = fill_dt.isoformat()
+                elif o.side == "sell":
+                    sells_by_sym_date.setdefault(sym, {})[fill_date_str] = fill_dt.isoformat()
+
+            changed = False
+
+            # 1. Rebuild sell_dates: for each symbol, record the most recent sell date
+            for sym, date_map in sells_by_sym_date.items():
+                latest_sell = max(date_map.keys())
+                existing = self._sell_dates.get(sym)
+                if existing is None or existing < latest_sell:
+                    log.info("PDT reconcile: updating sell_date for %s: %s → %s",
+                             sym, existing, latest_sell)
+                    self._sell_dates[sym] = latest_sell
+                    changed = True
+
+            # 2. Rebuild day_trades: a day trade = buy AND sell of same symbol on same date
+            detected_day_trades: set[str] = set()
+            for sym, sell_dates_map in sells_by_sym_date.items():
+                buy_dates_map = buys_by_sym_date.get(sym, {})
+                for sell_date in sell_dates_map:
+                    if sell_date in buy_dates_map:
+                        detected_day_trades.add(sell_date)
+
+            # Merge with existing _day_trades (don't lose any)
+            existing_set = set(self._day_trades)
+            for dt_str in detected_day_trades:
+                if dt_str not in existing_set:
+                    log.info("PDT reconcile: adding missing day trade on %s", dt_str)
+                    self._day_trades.append(dt_str)
+                    changed = True
+
+            # 3. Rebuild buy ledger from current positions + order history
+            #    For symbols currently held, make sure we have a buy date
+            try:
+                positions = broker.get_positions()
+                held_symbols = {p.symbol for p in positions}
+                for sym in held_symbols:
+                    if sym not in self._ledger:
+                        # Find the most recent buy date for this symbol
+                        buy_dates_map = buys_by_sym_date.get(sym, {})
+                        if buy_dates_map:
+                            latest_buy = max(buy_dates_map.keys())
+                            log.info("PDT reconcile: adding missing ledger entry for %s bought on %s",
+                                     sym, latest_buy)
+                            self._ledger[sym] = latest_buy
+                            self._buy_times[sym] = buy_dates_map[latest_buy]
+                            changed = True
+            except Exception as exc:
+                log.warning("PDT reconcile: could not fetch positions: %s", exc)
+
+            if changed:
+                self._save()
+                log.info("PDT reconcile: ledger updated and saved")
+            else:
+                log.info("PDT reconcile: ledger already up to date")
+
+            log.info(
+                "PDT reconcile complete: %d sell_dates, %d day_trades, %d ledger entries",
+                len(self._sell_dates), len(self._day_trades), len(self._ledger),
+            )
+
+        except Exception as exc:
+            log.error("PDT reconcile failed (continuing with local ledger): %s", exc)
 
     # ── helpers ───────────────────────────────────────────────
     def _rolling_day_trade_count(self) -> int:
