@@ -249,7 +249,7 @@ CHECK_EXITS_MINUTES = 15      # check exit signals every N minutes
 # ─────────────────────────────────────────────
 # Machine Learning (GBM entry model)
 # ─────────────────────────────────────────────
-ML_ENABLED = False              # set True after training a model
+ML_ENABLED = True              # set True after training a model
 ML_ENTRY_THRESHOLD = 0.40       # minimum GBM probability to enter (0-1)
 ML_MIN_SCORE = 3                # minimum hand-crafted score before consulting GBM
 ML_BLEND_MODE = "gate"          # "gate" = both score+ML must pass; "replace" = ML only

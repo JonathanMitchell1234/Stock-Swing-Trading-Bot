@@ -63,17 +63,19 @@ def _get_ml_model():
     return _ml_model
 
 
-# ─────────────────────────────────────────────
-# ENTRY  (scoring system)
-# ─────────────────────────────────────────────
-def score_entry(df: pd.DataFrame, weekly_bullish: bool = True) -> tuple[int, list[str]]:
-    """
-    Score the latest bar for entry quality.
-    Returns (score, [list of contributing factors]).
-    weekly_bullish: whether the weekly trend is aligned (from caller).
-    """
+def _score_entry_details(df: pd.DataFrame, weekly_bullish: bool = True) -> dict:
+    """Return full entry-score details, including any early block reasons."""
+    details = {
+        "score": 0,
+        "factors": [],
+        "block_reasons": [],
+    }
+
     if len(df) < max(config.MOMENTUM_LOOKBACK + 1, config.EMA_SLOPE_PERIOD + 1, 3):
-        return 0, []
+        details["block_reasons"].append(
+            f"Not enough bars ({len(df)}) for scoring"
+        )
+        return details
 
     cur = df.iloc[-1]
     prv = df.iloc[-2]
@@ -88,24 +90,27 @@ def score_entry(df: pd.DataFrame, weekly_bullish: bool = True) -> tuple[int, lis
     adx = cur["adx"]
     vol_ratio = cur["vol_ratio"]
     atr = cur["atr"]
-    bb_lower = cur.get("bb_lower", None)
     bb_mid = cur.get("bb_mid", None)
     stoch_k = cur.get("stoch_k", None)
     stoch_d = cur.get("stoch_d", None)
 
     if pd.isna(rsi) or pd.isna(atr) or pd.isna(adx):
-        return 0, []
+        details["block_reasons"].append("Missing key indicators (RSI/ATR/ADX)")
+        return details
 
-    # ── Gap-up filter: skip entries after exhaustion gaps ────
+    # Gap-up filter: skip entries after exhaustion gaps.
     prev_close = prv["close"]
     today_open = cur["open"]
     if prev_close > 0 and today_open > 0:
         gap_pct = (today_open - prev_close) / prev_close
         if gap_pct > config.GAP_UP_MAX_PCT:
-            return 0, [f"Gap-up {gap_pct*100:.1f}% (skipped)"]
+            reason = f"Gap-up {gap_pct*100:.1f}% exceeds {config.GAP_UP_MAX_PCT*100:.1f}%"
+            details["factors"].append(reason)
+            details["block_reasons"].append(reason)
+            return details
 
     score = 0
-    factors = []
+    factors: list[str] = []
 
     # +2: Price above 50-EMA (core uptrend)
     if price > ema_trend:
@@ -182,17 +187,31 @@ def score_entry(df: pd.DataFrame, weekly_bullish: bool = True) -> tuple[int, lis
     sr_resistance = cur.get("sr_resistance", None)
     if sr_support is not None and not pd.isna(sr_support):
         dist_to_support = (price - sr_support) / price if price > 0 else 1.0
-        if dist_to_support <= 0.03:  # within 3% of support
+        if dist_to_support <= 0.03:
             score += config.SR_SUPPORT_BONUS
             factors.append("Near support")
     if sr_resistance is not None and not pd.isna(sr_resistance):
         dist_to_resistance = (sr_resistance - price) / price if price > 0 else 1.0
-        # Only penalize near resistance if stock is BELOW EMA-50 (overhead resistance)
         if dist_to_resistance <= config.SR_RESISTANCE_BUFFER and price < ema_trend:
             score -= 1
             factors.append("Near resistance (-1)")
 
-    return score, factors
+    details["score"] = score
+    details["factors"] = factors
+    return details
+
+
+# ─────────────────────────────────────────────
+# ENTRY  (scoring system)
+# ─────────────────────────────────────────────
+def score_entry(df: pd.DataFrame, weekly_bullish: bool = True) -> tuple[int, list[str]]:
+    """
+    Score the latest bar for entry quality.
+    Returns (score, [list of contributing factors]).
+    weekly_bullish: whether the weekly trend is aligned (from caller).
+    """
+    details = _score_entry_details(df, weekly_bullish=weekly_bullish)
+    return details["score"], details["factors"]
 
 
 def compute_momentum(df: pd.DataFrame) -> float:
@@ -215,7 +234,8 @@ def compute_momentum(df: pd.DataFrame) -> float:
 
 def check_entry(df: pd.DataFrame, weekly_bullish: bool = True,
                 spy_df: pd.DataFrame | None = None,
-                vixy_df: pd.DataFrame | None = None) -> dict | None:
+                vixy_df: pd.DataFrame | None = None,
+                explain: bool = False) -> dict | None:
     """
     Evaluate the latest bar using the scoring system + optional ML model.
 
@@ -230,7 +250,27 @@ def check_entry(df: pd.DataFrame, weekly_bullish: bool = True,
 
     Return a signal dict if score meets threshold, else None.
     """
-    score, factors = score_entry(df, weekly_bullish=weekly_bullish)
+    details = _score_entry_details(df, weekly_bullish=weekly_bullish)
+    score = details["score"]
+    factors = list(details["factors"])
+    block_reasons = list(details["block_reasons"])
+
+    diagnostics = {
+        "eligible": False,
+        "score": score,
+        "threshold": config.ENTRY_SCORE_THRESHOLD,
+        "factors": factors,
+        "block_reasons": block_reasons,
+        "ml_prob": None,
+        "price": None,
+        "atr": None,
+        "reason": "",
+        "signal": None,
+    }
+
+    if block_reasons:
+        diagnostics["reason"] = "; ".join(block_reasons)
+        return diagnostics if explain else None
 
     # ── ML-enhanced path ─────────────────────────────────────
     if config.ML_ENABLED:
@@ -239,7 +279,12 @@ def check_entry(df: pd.DataFrame, weekly_bullish: bool = True,
 
         # In "gate" mode, require minimum hand-crafted score first
         if config.ML_BLEND_MODE == "gate" and score < config.ML_MIN_SCORE:
-            return None
+            block_reasons.append(
+                f"Score {score} below ML gate minimum {config.ML_MIN_SCORE}"
+            )
+            diagnostics["block_reasons"] = block_reasons
+            diagnostics["reason"] = block_reasons[-1]
+            return diagnostics if explain else None
 
         # Get ML prediction
         if ml.is_available():
@@ -250,18 +295,34 @@ def check_entry(df: pd.DataFrame, weekly_bullish: bool = True,
 
         if ml_prob is not None:
             if ml_prob < config.ML_ENTRY_THRESHOLD:
-                log.debug("ML rejected: score=%d, prob=%.3f < threshold %.3f",
-                          score, ml_prob, config.ML_ENTRY_THRESHOLD)
-                return None
+                reason = (
+                    f"ML prob {ml_prob:.3f} below threshold {config.ML_ENTRY_THRESHOLD:.3f}"
+                )
+                block_reasons.append(reason)
+                diagnostics["block_reasons"] = block_reasons
+                diagnostics["ml_prob"] = ml_prob
+                diagnostics["reason"] = reason
+                return diagnostics if explain else None
             factors.append(f"ML prob={ml_prob:.2f}")
+            diagnostics["ml_prob"] = ml_prob
         else:
             # Model unavailable — fall back to hand-crafted threshold
             if score < config.ENTRY_SCORE_THRESHOLD:
-                return None
+                reason = (
+                    f"Score {score} below threshold {config.ENTRY_SCORE_THRESHOLD} (ML unavailable fallback)"
+                )
+                block_reasons.append(reason)
+                diagnostics["block_reasons"] = block_reasons
+                diagnostics["reason"] = reason
+                return diagnostics if explain else None
     else:
         # ── Original path (no ML) ───────────────────────────
         if score < config.ENTRY_SCORE_THRESHOLD:
-            return None
+            reason = f"Score {score} below threshold {config.ENTRY_SCORE_THRESHOLD}"
+            block_reasons.append(reason)
+            diagnostics["block_reasons"] = block_reasons
+            diagnostics["reason"] = reason
+            return diagnostics if explain else None
 
     cur = df.iloc[-1]
     price = cur["close"]
@@ -282,6 +343,18 @@ def check_entry(df: pd.DataFrame, weekly_bullish: bool = True,
     }
     if config.ML_ENABLED and ml_prob is not None:
         signal["ml_prob"] = ml_prob
+    diagnostics.update(
+        {
+            "eligible": True,
+            "factors": factors,
+            "price": price,
+            "atr": atr,
+            "reason": reason,
+            "signal": signal,
+        }
+    )
+    if explain:
+        return diagnostics
     log.info("ENTRY signal: price=%.2f  %s", price, reason)
     return signal
 
@@ -290,7 +363,8 @@ def check_entry(df: pd.DataFrame, weekly_bullish: bool = True,
 # EXIT  (layered – hard + soft)
 # ─────────────────────────────────────────────
 def check_exit(df: pd.DataFrame, entry_price: float = 0.0,
-               hold_days: int = 0) -> dict | None:
+               hold_days: int = 0,
+               explain: bool = False) -> dict | None:
     """
     Evaluate whether an existing position should be closed.
 
@@ -298,8 +372,23 @@ def check_exit(df: pd.DataFrame, entry_price: float = 0.0,
     SOFT exits require 2+ simultaneous signals to avoid
     getting shaken out by normal volatility.
     """
+    diagnostics = {
+        "should_exit": False,
+        "signal": None,
+        "hard_reasons": [],
+        "soft_reasons": [],
+        "reasons": [],
+        "hold_reason": "",
+        "price": None,
+        "rsi": None,
+        "macd_hist": None,
+        "entry_price": entry_price,
+        "hold_days": hold_days,
+    }
+
     if len(df) < 4:
-        return None
+        diagnostics["hold_reason"] = f"Not enough bars ({len(df)}/4)"
+        return diagnostics if explain else None
 
     cur = df.iloc[-1]
     prv = df.iloc[-2]
@@ -313,7 +402,8 @@ def check_exit(df: pd.DataFrame, entry_price: float = 0.0,
     macd_hist = cur["macd_hist"]
 
     if pd.isna(rsi):
-        return None
+        diagnostics["hold_reason"] = "RSI unavailable"
+        return diagnostics if explain else None
 
     hard_reasons = []
     soft_reasons = []
@@ -364,8 +454,20 @@ def check_exit(df: pd.DataFrame, entry_price: float = 0.0,
     elif len(soft_reasons) >= 2:
         reasons = soft_reasons
 
+    diagnostics["price"] = price
+    diagnostics["rsi"] = rsi
+    diagnostics["macd_hist"] = macd_hist
+    diagnostics["hard_reasons"] = hard_reasons
+    diagnostics["soft_reasons"] = soft_reasons
+
     if not reasons:
-        return None
+        if soft_reasons:
+            diagnostics["hold_reason"] = (
+                f"Only {len(soft_reasons)}/2 soft exit signals"
+            )
+        else:
+            diagnostics["hold_reason"] = "No hard or soft exit triggers"
+        return diagnostics if explain else None
 
     signal = {
         "action": "SELL",
@@ -374,5 +476,15 @@ def check_exit(df: pd.DataFrame, entry_price: float = 0.0,
         "macd_hist": macd_hist,
         "reasons": reasons,
     }
+    diagnostics.update(
+        {
+            "should_exit": True,
+            "signal": signal,
+            "reasons": reasons,
+            "hold_reason": "",
+        }
+    )
+    if explain:
+        return diagnostics
     log.info("EXIT  signal: price=%.2f  reasons=%s", price, ", ".join(reasons))
     return signal

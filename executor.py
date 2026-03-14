@@ -135,11 +135,12 @@ class TradeExecutor:
                 continue
 
             entry_price = float(pos.avg_entry_price)
-            signal = check_exit(df, entry_price)
+            current_price = float(pos.current_price)
+            signal = check_exit(df, entry_price, explain=True)
 
-            if signal is not None:
+            if signal.get("should_exit"):
                 log.info(
-                    "EXIT  %s  qty=%d  entry=%.2f  now=%.2f  reasons=%s",
+                    "EXIT  %s  qty=%s  entry=%.2f  now=%.2f  reasons=%s",
                     symbol,
                     qty,
                     entry_price,
@@ -157,8 +158,17 @@ class TradeExecutor:
                 except Exception as exc:
                     log.error("Sell order failed for %s: %s", symbol, exc)
             else:
+                log.info(
+                    "HOLD  %s  qty=%s  entry=%.2f  now=%.2f  reason=%s  (hard=%s, soft=%s)",
+                    symbol,
+                    qty,
+                    entry_price,
+                    current_price,
+                    signal.get("hold_reason", "None given"),
+                    signal.get("hard_reasons", []),
+                    signal.get("soft_reasons", []),
+                )
                 # If position is profitable, consider adding trailing stop
-                current_price = float(pos.current_price)
                 unrealised_pct = (current_price - entry_price) / entry_price
 
                 # Determine which trailing stop level applies
@@ -387,8 +397,12 @@ class TradeExecutor:
     # ─────────────────────────────────────────────────────────
     def run_cycle(self) -> None:
         """Execute one full scan cycle: exits first, then entries."""
-        if not self.broker.is_market_open():
-            log.info("Market is closed – skipping cycle")
+        try:
+            if not self.broker.is_market_open():
+                log.info("Market is closed – skipping cycle")
+                return
+        except Exception as exc:
+            log.warning("Network error while checking market clock: %s – skipping cycle", exc)
             return
 
         log.info("=" * 60)

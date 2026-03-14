@@ -144,14 +144,19 @@ class AlpacaBroker:
         """Submit a trailing-stop sell order."""
         if qty <= 0:
             return None
-        log.info("TRAILING STOP  %s  qty=%d  trail=%.1f%%", symbol, qty, trail_pct * 100)
+        log.info("TRAILING STOP  %s  qty=%f  trail=%.1f%%", symbol, qty, trail_pct * 100)
+        
+        # Alpaca requires fractional orders to be DAY orders
+        is_fractional = qty % 1 != 0
+        tif = "day" if is_fractional else "gtc"
+        
         return self.api.submit_order(
             symbol=symbol,
             qty=qty,
             side="sell",
             type="trailing_stop",
             trail_percent=str(round(trail_pct * 100, 2)),
-            time_in_force="gtc",
+            time_in_force=tif,
         )
 
     def resubmit_stop_losses(self, pdt_guard) -> int:
@@ -297,5 +302,6 @@ class AlpacaBroker:
         """Return recently closed (filled) orders for PDT tracking."""
         params = {"status": "closed", "limit": limit, "direction": "desc"}
         if after:
-            params["after"] = after.isoformat()
+            # Alpaca requires RFC 3339 / ISO 8601 with 'Z' suffix (UTC)
+            params["after"] = after.strftime("%Y-%m-%dT%H:%M:%SZ")
         return self.api.list_orders(**params)

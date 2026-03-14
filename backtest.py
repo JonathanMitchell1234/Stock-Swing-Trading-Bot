@@ -33,6 +33,7 @@ import pandas as pd
 
 import config
 from indicators import compute_all, compute_weekly_trend, realized_volatility
+from strategy import check_entry as strategy_check_entry
 from logger import get_logger
 
 log = get_logger("backtest")
@@ -451,156 +452,72 @@ class Backtester:
         count = self._sector_counts.get(sector, 0)
         self._sector_counts[sector] = max(0, count - 1)
 
-    # ── strategy evaluation (v4 scoring + advanced filters) ──
+    # ── strategy evaluation (v4 scoring + ML + advanced filters) ──
     def _check_entry(self, df: pd.DataFrame, momentum: float = 0.0,
                       weekly_bullish: bool = True,
                       score_threshold: int = 0,
                       inverse_mode: bool = False) -> Optional[dict]:
-        """Scoring-based entry system with momentum bonus + v4 advanced filters.
-
-        When inverse_mode=True the scoring logic is inverted so that bearish
-        market conditions score positively (used for SQQQ/SPXS etc.).
         """
-        if len(df) < max(config.MOMENTUM_LOOKBACK + 1, config.EMA_SLOPE_PERIOD + 1, 3):
-            return None
+        Entry check for backtesting.
 
-        cur = df.iloc[-1]
-        prv = df.iloc[-2]
+        For normal (non-inverse) symbols: delegates to strategy.check_entry,
+        which is the same function used in live/paper trading and already
+        includes the full ML pipeline (GBM gate/replace modes).
 
+        For inverse ETFs: uses the separate bearish scoring logic.
+        """
         if inverse_mode:
+            if len(df) < max(config.MOMENTUM_LOOKBACK + 1, config.EMA_SLOPE_PERIOD + 1, 3):
+                return None
+            cur = df.iloc[-1]
+            prv = df.iloc[-2]
             return self._check_inverse_entry(df, cur, prv, momentum, score_threshold)
 
-        price = cur["close"]
-        ema_fast = cur["ema_fast"]
-        ema_slow = cur["ema_slow"]
-        ema_trend = cur["ema_trend"]
-        ema_200 = cur.get("ema_200", None)
-        rsi = cur["rsi"]
-        macd_hist = cur["macd_hist"]
-        adx = cur["adx"]
-        vol_ratio = cur["vol_ratio"]
-        atr = cur["atr"]
-        bb_mid = cur.get("bb_mid", None)
-        stoch_k = cur.get("stoch_k", None)
-        stoch_d = cur.get("stoch_d", None)
+        # ── Normal symbols: use live strategy (includes ML) ──────────
+        # Temporarily lower the config threshold if dynamic threshold says so,
+        # then restore it. strategy.check_entry reads config.ENTRY_SCORE_THRESHOLD.
+        original_threshold = config.ENTRY_SCORE_THRESHOLD
+        if score_threshold > 0 and score_threshold != original_threshold:
+            config.ENTRY_SCORE_THRESHOLD = score_threshold
 
-        if pd.isna(rsi) or pd.isna(atr) or pd.isna(adx):
+        # Build the up-to-date SPY and VIXY slices for macro context
+        # (mirrors how executor.py passes them in live mode)
+        spy_df: pd.DataFrame | None = None
+        vixy_df: pd.DataFrame | None = None
+        if self._regime_data is not None and not self._regime_data.empty:
+            bar_date = df.index[-1].date()
+            spy_mask = self._regime_data.index.date <= bar_date
+            if spy_mask.any():
+                spy_df = self._regime_data.loc[spy_mask]
+        if self._vix_data is not None and not self._vix_data.empty:
+            bar_date = df.index[-1].date()
+            vixy_mask = self._vix_data.index.date <= bar_date
+            if vixy_mask.any():
+                vixy_df = self._vix_data.loc[vixy_mask]
+
+        try:
+            signal = strategy_check_entry(
+                df,
+                weekly_bullish=weekly_bullish,
+                spy_df=spy_df,
+                vixy_df=vixy_df,
+            )
+        finally:
+            config.ENTRY_SCORE_THRESHOLD = original_threshold
+
+        if signal is None:
             return None
 
-        # ── Gap-up filter: skip exhaustion gaps ──────────────
-        prev_close = prv["close"]
-        today_open = cur["open"]
-        if prev_close > 0 and today_open > 0:
-            gap_pct = (today_open - prev_close) / prev_close
-            if gap_pct > config.GAP_UP_MAX_PCT:
-                return None
+        # If a momentum bonus applies in the backtest, add it to the score
+        # (live path doesn't compute momentum inline — that's the screener's job)
+        if momentum > 0.05:
+            signal["score"] = signal.get("score", 0) + config.MOMENTUM_SCORE_WEIGHT
+            signal["reason"] += f", Momentum +{momentum*100:.0f}%"
+        elif momentum > 0.02:
+            signal["score"] = signal.get("score", 0) + 1
+            signal["reason"] += f", Momentum +{momentum*100:.0f}%"
 
-        score = 0
-        factors = []
-
-        # +2: Price above EMA-50
-        if price > ema_trend:
-            score += 2
-            factors.append("Above EMA-50")
-
-        # +1: Price above EMA-200
-        if ema_200 is not None and not pd.isna(ema_200) and price > ema_200:
-            score += 1
-            factors.append("Above EMA-200")
-
-        # +2: Bullish EMA crossover
-        if (prv["ema_fast"] <= prv["ema_slow"]) and (ema_fast > ema_slow):
-            score += 2
-            factors.append("EMA crossover")
-
-        # +1: Trend quality - EMA-50 slope is rising
-        if len(df) >= config.EMA_SLOPE_PERIOD + 1:
-            ema50_now = cur["ema_trend"]
-            ema50_ago = df.iloc[-(config.EMA_SLOPE_PERIOD + 1)]["ema_trend"]
-            if not pd.isna(ema50_now) and not pd.isna(ema50_ago) and ema50_now > ema50_ago:
-                score += 1
-                factors.append("EMA-50 rising")
-
-        # +2: RSI in pullback zone (30-50)
-        if config.RSI_OVERSOLD <= rsi <= 50:
-            score += 2
-            factors.append(f"RSI pullback ({rsi:.0f})")
-        elif 50 < rsi <= 60:
-            score += 1
-            factors.append(f"RSI mid-range ({rsi:.0f})")
-
-        # +1: MACD positive or turning
-        macd_ok = macd_hist > 0 or (
-            prv["macd_hist"] < 0 and macd_hist > prv["macd_hist"]
-        )
-        if macd_ok:
-            score += 1
-            factors.append("MACD+")
-
-        # +1: Volume above average
-        if vol_ratio >= config.VOLUME_SURGE_FACTOR:
-            score += 1
-            factors.append(f"Vol {vol_ratio:.1f}x")
-
-        # +1: ADX
-        if adx > 20:
-            score += 1
-            factors.append(f"ADX {adx:.0f}")
-
-        # +1: Near lower BB
-        if bb_mid is not None and not pd.isna(bb_mid) and price <= bb_mid:
-            score += 1
-            factors.append("Near BB lower")
-
-        # +1: Stochastic bullish crossover
-        if (stoch_k is not None and stoch_d is not None
-                and not pd.isna(stoch_k) and not pd.isna(stoch_d)):
-            prv_sk = prv.get("stoch_k", None)
-            prv_sd = prv.get("stoch_d", None)
-            if (prv_sk is not None and prv_sd is not None
-                    and not pd.isna(prv_sk) and not pd.isna(prv_sd)):
-                if prv_sk <= prv_sd and stoch_k > stoch_d and stoch_k < 50:
-                    score += 1
-                    factors.append("Stoch cross")
-
-        # +2: Top-quartile momentum bonus
-        if momentum > 0.05:  # > 5% in lookback period
-            score += config.MOMENTUM_SCORE_WEIGHT
-            factors.append(f"Momentum +{momentum*100:.0f}%")
-        elif momentum > 0.02:  # moderate momentum
-            score += 1
-            factors.append(f"Momentum +{momentum*100:.0f}%")
-
-        # +1: Weekly trend agrees (multi-timeframe)
-        if config.WEEKLY_TREND_ENABLED and weekly_bullish:
-            score += config.WEEKLY_TREND_BONUS
-            factors.append("Weekly trend OK")
-
-        # +1/-1: Support / Resistance awareness
-        sr_support = cur.get("sr_support", None)
-        sr_resistance = cur.get("sr_resistance", None)
-        if sr_support is not None and not pd.isna(sr_support) and price > 0:
-            dist_to_support = (price - sr_support) / price
-            if dist_to_support <= 0.03:
-                score += config.SR_SUPPORT_BONUS
-                factors.append("Near support")
-        if sr_resistance is not None and not pd.isna(sr_resistance) and price > 0:
-            dist_to_resistance = (sr_resistance - price) / price
-            # Only penalize near resistance if stock is BELOW EMA-50 (overhead resistance)
-            if dist_to_resistance <= config.SR_RESISTANCE_BUFFER and price < ema_trend:
-                score -= 1
-                factors.append("Near resistance (-1)")
-
-        threshold = score_threshold if score_threshold > 0 else config.ENTRY_SCORE_THRESHOLD
-        if score < threshold:
-            return None
-
-        return {
-            "price": price,
-            "atr": atr,
-            "score": score,
-            "reason": f"Score {score}: {', '.join(factors)}",
-        }
+        return signal
 
     def _check_inverse_entry(self, df: pd.DataFrame, cur: pd.Series,
                               prv: pd.Series, momentum: float,
