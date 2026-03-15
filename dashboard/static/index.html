@@ -1490,6 +1490,31 @@
 				</div>
 			</div>
 
+			<!-- Row 3.5: Portfolio sentiment ─────────────────────── -->
+			<div class="card">
+				<div class="card-header">
+					<span class="card-title">Portfolio Sentiment (FinBERT)</span>
+					<button class="refresh-btn" onclick="loadPortfolioSentiment()">↻ Refresh</button>
+				</div>
+				<div style="overflow-x: auto">
+					<table class="data-table">
+						<thead>
+							<tr>
+								<th>Symbol</th>
+								<th class="num">Sentiment</th>
+								<th class="num">Score</th>
+								<th class="num">Headlines</th>
+							</tr>
+						</thead>
+						<tbody id="positions-sentiment-tbody">
+							<tr class="loading-row">
+								<td colspan="4"><span class="spinner"></span> Loading…</td>
+							</tr>
+						</tbody>
+					</table>
+				</div>
+			</div>
+
 			<!-- Row 4: Watchlist + Trade history ─────────────────── -->
 			<div class="two-col">
 				<!-- Watchlist signal scores -->
@@ -2312,6 +2337,41 @@
 				}
 			}
 
+			/* ── Portfolio sentiment ─────────────────────────────────── */
+			async function loadPortfolioSentiment() {
+				const tbody = $("positions-sentiment-tbody");
+				try {
+					const data = await apiFetch("/api/positions_sentiment");
+					const items = data.items || [];
+
+					if (!items.length) {
+						tbody.innerHTML = '<tr><td colspan="4" class="empty-state">No open positions</td></tr>';
+						return;
+					}
+
+					tbody.innerHTML = items
+						.map((row) => {
+							const label = row.label || "NEUTRAL";
+							let labelClass = "neu";
+							if (label === "POSITIVE") labelClass = "pos";
+							if (label === "NEGATIVE") labelClass = "neg";
+							if (label === "DISABLED") labelClass = "warn";
+
+							const scoreText = row.score == null ? "—" : Number(row.score).toFixed(3);
+
+							return `<tr>
+        <td><strong>${row.symbol}</strong></td>
+        <td class="num ${labelClass}">${label}</td>
+        <td class="num ${labelClass}">${scoreText}</td>
+        <td class="num">${row.headline_count ?? 0}</td>
+      </tr>`;
+						})
+						.join("");
+				} catch (e) {
+					tbody.innerHTML = `<tr class="loading-row"><td colspan="4" class="neg">Error: ${e.message}</td></tr>`;
+				}
+			}
+
 			/* ── Market regime ───────────────────────────────────────── */
 			async function loadRegime() {
 				try {
@@ -2641,7 +2701,15 @@
 			/* ── Init ────────────────────────────────────────────────── */
 			async function init() {
 				// Load everything in parallel
-				await Promise.allSettled([loadClock(), loadAccount(), loadPositions(), loadRegime(), loadEquityHistory(), loadTradingModeInfo()]);
+				await Promise.allSettled([
+					loadClock(),
+					loadAccount(),
+					loadPositions(),
+					loadPortfolioSentiment(),
+					loadRegime(),
+					loadEquityHistory(),
+					loadTradingModeInfo(),
+				]);
 
 				// Slower/heavier loads after
 				loadWatchlist();
@@ -2669,6 +2737,7 @@
 				// Periodic refresh schedules
 				setInterval(loadAccount, 60_000); // every 1 min
 				setInterval(loadPositions, 30_000); // every 30 s
+				setInterval(loadPortfolioSentiment, 120_000); // every 2 min
 				setInterval(loadClock, 60_000); // every 1 min
 				setInterval(loadRegime, 120_000); // every 2 min
 				setInterval(loadEquityHistory, 300_000); // every 5 min

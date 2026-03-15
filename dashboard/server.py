@@ -17,6 +17,7 @@ import os
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+import pandas as pd
 # ── make sure the parent dir (Trader/) is importable ─────────
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -150,6 +151,68 @@ async def get_positions():
                 "side":        p.side,
             })
         return positions
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/positions_sentiment")
+async def get_positions_sentiment():
+    """FinBERT sentiment snapshot for all currently held symbols."""
+    try:
+        api = _get_api()
+        raw_positions = api.list_positions()
+        symbols = [p.symbol for p in raw_positions]
+
+        if not symbols:
+            return {
+                "enabled": bool(getattr(config, "NLP_SENTIMENT_ENABLED", False)),
+                "items": [],
+            }
+
+        if not getattr(config, "NLP_SENTIMENT_ENABLED", False):
+            return {
+                "enabled": False,
+                "items": [
+                    {
+                        "symbol": sym,
+                        "score": None,
+                        "label": "DISABLED",
+                        "headline_count": 0,
+                    }
+                    for sym in symbols
+                ],
+            }
+
+        import sentiment
+
+        limit = int(getattr(config, "NLP_NEWS_LIMIT_PER_SYMBOL", 10))
+        items = []
+
+        for sym in symbols:
+            try:
+                news_items = api.get_news(sym, limit=limit)
+                headlines = [n.headline for n in news_items if hasattr(n, "headline")]
+            except Exception:
+                headlines = []
+
+            score = sentiment.get_sentiment(headlines)
+            if score >= 0.20:
+                label = "POSITIVE"
+            elif score <= -0.20:
+                label = "NEGATIVE"
+            else:
+                label = "NEUTRAL"
+
+            items.append(
+                {
+                    "symbol": sym,
+                    "score": round(score, 3),
+                    "label": label,
+                    "headline_count": len(headlines),
+                }
+            )
+
+        return {"enabled": True, "items": items}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
