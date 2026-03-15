@@ -287,6 +287,19 @@ class AlpacaBroker:
         trade = self.api.get_latest_trade(symbol)
         return float(trade.price)
 
+    # ── News Data ────────────────────────────────────────────
+    def get_news(self, symbol: str, limit: int = 10, end: str | None = None) -> list[str]:
+        """Fetch latest news headlines for a symbol before an optional end date (RFC3339)."""
+        try:
+            kwargs = {"limit": limit}
+            if end:
+                kwargs["end"] = end
+            news_items = self.api.get_news(symbol, **kwargs)
+            return [item.headline for item in news_items if hasattr(item, 'headline')]
+        except Exception as exc:
+            log.warning("Failed to fetch news for %s: %s", symbol, exc)
+            return []
+
     # ── Market Clock ─────────────────────────────────────────
     def is_market_open(self) -> bool:
         clock = self.api.get_clock()

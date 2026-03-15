@@ -1,0 +1,3 @@
+Background thread starting import...
+THREAD DEADLOCKED!
+libc++abi: terminating due to uncaught exception of type std::__1::system_error: mutex lock failed: Invalid argument

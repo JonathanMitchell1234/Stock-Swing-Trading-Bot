@@ -24,6 +24,10 @@ import argparse
 import datetime as dt
 import math
 import os
+os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
+os.environ['OMP_NUM_THREADS'] = '1'
+os.environ['TOKENIZERS_PARALLELISM'] = 'false'
+
 import sys
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
@@ -906,6 +910,37 @@ class Backtester:
                 )
                 if signal is None:
                     continue
+
+                # ── NLP Sentiment Check (Backtest) ──────────
+                if getattr(config, "NLP_SENTIMENT_ENABLED", False):
+                    import sentiment
+                    from broker import AlpacaBroker
+                    
+                    if not hasattr(self, "_alpaca_broker"):
+                        self._alpaca_broker = AlpacaBroker()
+                    if not hasattr(self, "_sentiment_cache"):
+                        self._sentiment_cache = {}
+                        
+                    # Request historical news strictly up to this trading date
+                    end_str = date.strftime("%Y-%m-%dT23:59:59Z")
+                    cache_key = f"{symbol}_{end_str}"
+                    
+                    if cache_key not in self._sentiment_cache:
+                        news_limit = getattr(config, "NLP_NEWS_LIMIT_PER_SYMBOL", 10)
+                        headlines = self._alpaca_broker.get_news(symbol, limit=news_limit, end=end_str)
+                        sentiment_score = sentiment.get_sentiment(headlines)
+                        self._sentiment_cache[cache_key] = sentiment_score
+                        log.info("BACKTEST NLP %s on %s: Score = %.2f", symbol, date, sentiment_score)
+                    
+                    sentiment_score = self._sentiment_cache[cache_key]
+                    min_sentiment = getattr(config, "NLP_MIN_SENTIMENT", -0.20)
+                    
+                    if sentiment_score < min_sentiment:
+                        log.debug(
+                            "BACKTEST SKIP %s on %s – Negative news sentiment (%.2f < %.2f)",
+                            symbol, date, sentiment_score, min_sentiment
+                        )
+                        continue
 
                 entry_price = self._apply_slippage(signal["price"], "BUY")
                 atr = signal["atr"]

@@ -42,6 +42,23 @@ class Screener:
                     )
                     continue
 
+                # ── NLP Sentiment ────────────────────────────
+                # Calculate recent sentiment for rule-based filter
+                sentiment_score = 0.0
+                if getattr(config, "NLP_SENTIMENT_ENABLED", False):
+                    import sentiment
+                    headlines = self.broker.get_news(symbol, limit=getattr(config, "NLP_NEWS_LIMIT_PER_SYMBOL", 10))
+                    sentiment_score = sentiment.get_sentiment(headlines)
+                    
+                    # Hard reject if news indicates highly negative sentiment
+                    min_sentiment = getattr(config, "NLP_MIN_SENTIMENT", -0.20)
+                    if sentiment_score < min_sentiment:
+                        log.info(
+                            "SKIP %s – Negative news sentiment (%.2f < %.2f)",
+                            symbol, sentiment_score, min_sentiment
+                        )
+                        continue
+
                 df = compute_all(df)
                 row = latest_row(df)
 

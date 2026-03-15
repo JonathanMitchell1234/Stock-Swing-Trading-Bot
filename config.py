@@ -258,6 +258,13 @@ ML_MIN_GAIN_PCT = 0.03          # label = 1 if close ≥ entry × (1 + this) wit
 ML_TRAINING_MONTHS = 24         # months of history to use for training
 
 # ─────────────────────────────────────────────
+# NLP Sentiment (FinBERT)
+# ─────────────────────────────────────────────
+NLP_SENTIMENT_ENABLED = True
+NLP_NEWS_LIMIT_PER_SYMBOL = 10    # how many recent headlines to fetch per ticker
+NLP_MIN_SENTIMENT = -0.20         # reject trade if news sentiment is below this threshold (negative)
+
+# ─────────────────────────────────────────────
 # Logging
 # ─────────────────────────────────────────────
 LOG_LEVEL = "DEBUG"
