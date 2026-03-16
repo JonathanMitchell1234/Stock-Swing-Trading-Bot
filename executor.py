@@ -182,9 +182,13 @@ class TradeExecutor:
                 if trail_pct is not None:
                     # Check if trailing stop already exists
                     open_orders = self.broker.get_open_orders(symbol)
+                    
+                    # Also consider standard stops as "trailing" if we submitted them as a fractional replacement
+                    # This prevents us from submitting a new stop order every iter.
                     has_trailing = any(
-                        o.type == "trailing_stop" for o in open_orders
+                        o.type in ("trailing_stop", "stop", "stop_limit") for o in open_orders
                     )
+                    
                     if not has_trailing:
                         log.info(
                             "Adding trailing stop for %s (%.1f%% profit, trail=%.1f%%)",

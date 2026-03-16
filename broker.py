@@ -141,14 +141,36 @@ class AlpacaBroker:
         )
 
     def submit_trailing_stop(self, symbol: str, qty: float, trail_pct: float):
-        """Submit a trailing-stop sell order."""
+        """Submit a trailing-stop sell order.
+        Note: Alpaca does not support trailing stop orders for fractional shares.
+        If qty is fractional, we will submit a standard stop order based on the 
+        current price and the trail_pct. The executor will continuously update 
+        this stop if the price moves up.
+        """
         if qty <= 0:
             return None
-        log.info("TRAILING STOP  %s  qty=%f  trail=%.1f%%", symbol, qty, trail_pct * 100)
         
-        # Alpaca requires fractional orders to be DAY orders
         is_fractional = qty % 1 != 0
-        tif = "day" if is_fractional else "gtc"
+        
+        if is_fractional:
+            log.info("TRAILING STOP (Emulated) %s  qty=%f  trail=%.1f%%  (fractional fallback)", symbol, qty, trail_pct * 100)
+            try:
+                current_price = self.get_latest_price(symbol)
+                stop_price = round(current_price * (1 - trail_pct), 2)
+                return self.api.submit_order(
+                    symbol=symbol,
+                    qty=qty,
+                    side="sell",
+                    type="stop",
+                    stop_price=stop_price,
+                    time_in_force="day",
+                )
+            except Exception as exc:
+                log.warning("Emulated trailing stop failed for %s: %s", symbol, exc)
+                return None
+                
+        # Pure integer share sizes can use native trailing stops
+        log.info("TRAILING STOP  %s  qty=%f  trail=%.1f%%", symbol, qty, trail_pct * 100)
         
         return self.api.submit_order(
             symbol=symbol,
@@ -156,7 +178,7 @@ class AlpacaBroker:
             side="sell",
             type="trailing_stop",
             trail_percent=str(round(trail_pct * 100, 2)),
-            time_in_force=tif,
+            time_in_force="gtc",
         )
 
     def resubmit_stop_losses(self, pdt_guard) -> int:
