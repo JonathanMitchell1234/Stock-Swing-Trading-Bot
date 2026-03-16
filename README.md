@@ -207,6 +207,8 @@ Stock-Swing-Trading-Bot/
 ├── ml_features.py        # Feature extraction for the ML model
 ├── logger.py             # Logging setup
 ├── requirements.txt      # Python dependencies
+├── scripts/
+│   └── setup_jetson_cuda.sh # Jetson CUDA + torch installer
 ├── config_overrides.json # Dashboard/UI config overrides (auto-generated)
 ├── .env                  # API keys & trading mode (git-ignored)
 ├── dashboard/            # Optional web dashboard
@@ -221,6 +223,31 @@ Stock-Swing-Trading-Bot/
 ---
 
 ## Quick Start
+
+### Jetson Orin Nano Super (CUDA Sentiment)
+
+If you are deploying on Jetson, do **not** rely on the default PyPI torch wheel. Use the Jetson setup script so `torch` is installed from NVIDIA/Jetson indexes with CUDA support.
+
+```bash
+./scripts/setup_jetson_cuda.sh
+```
+
+Notes:
+- The script auto-detects JetPack family from `/etc/nv_tegra_release`.
+- For custom wheels/indexes, override with:
+
+```bash
+JETSON_PYTORCH_INDEX_URL="https://pypi.jetson-ai-lab.dev/jp6/cu126" ./scripts/setup_jetson_cuda.sh
+```
+
+Quick CUDA verification:
+
+```bash
+python3 -c "import torch; print(torch.__version__); print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'no-gpu')"
+python3 test_sentiment.py
+```
+
+By default the sentiment module uses `NLP_DEVICE = "auto"` and will run FinBERT on CUDA when available.
 
 ### 1. Install dependencies
 
@@ -314,6 +341,10 @@ All parameters are in [`config.py`](config.py). They can be overridden at runtim
 | `ML_ENTRY_THRESHOLD` | `0.40` | Min ML win-probability |
 | `ML_MIN_SCORE` | `3` | Min score before consulting ML |
 | `ML_BLEND_MODE` | `"gate"` | `"gate"` or `"replace"` |
+| `NLP_SENTIMENT_ENABLED` | `True` | Enable FinBERT sentiment filter |
+| `NLP_MIN_SENTIMENT` | `-0.20` | Reject entries when sentiment falls below threshold |
+| `NLP_DEVICE` | `"auto"` | `"auto"`, `"cuda"`, or `"cpu"` |
+| `NLP_USE_FP16` | `True` | Use FP16 for FinBERT when running on CUDA |
 | `ATR_STOP_MULTIPLIER` | `3.0` | Stop = entry − 3×ATR |
 | `ATR_PROFIT_MULTIPLIER` | `7.0` | Target = entry + 7×ATR |
 | `TRAILING_STOP_ACTIVATE_PCT` | `6%` | Activate trailing stop at +6% gain |

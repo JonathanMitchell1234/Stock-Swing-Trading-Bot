@@ -14,10 +14,11 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 os.environ["TRANSFORMERS_NO_TF"] = "1"
 os.environ["USE_TF"] = "0"
 
-import logging
+import config
+from logger import get_logger
 from typing import List
 
-log = logging.getLogger("sentiment")
+log = get_logger("sentiment")
 
 class FinBERTSentiment:
     _instance = None
@@ -45,10 +46,54 @@ class FinBERTSentiment:
             except Exception:
                 pass
             
-            # Force CPU by default to avoid MPS (Metal) deadlocks on Mac
-            device = -1
-            
-            self.pipeline = pipeline("sentiment-analysis", model="ProsusAI/finbert", device=device)
+            requested_device = str(getattr(config, "NLP_DEVICE", "auto")).lower().strip()
+            if requested_device not in {"auto", "cuda", "cpu"}:
+                log.warning("Invalid NLP_DEVICE=%s. Falling back to 'auto'.", requested_device)
+                requested_device = "auto"
+
+            cuda_available = torch.cuda.is_available()
+            use_cuda = requested_device == "cuda" or (requested_device == "auto" and cuda_available)
+            if use_cuda and not cuda_available:
+                log.warning("NLP_DEVICE='cuda' requested but CUDA is unavailable. Falling back to CPU.")
+                use_cuda = False
+            device = 0 if use_cuda else -1
+
+            # Temporary fix for CVE-2025-32434 weights_only restriction in torch when using transformers + torch < 2.6
+            try:
+                # We can inform transformers not to use weights_only by importing weights_only = False
+                # Or bypass the restrict by environment variable before transformers imports torch
+                os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
+            except Exception:
+                pass
+
+            pipeline_kwargs = {
+                "task": "sentiment-analysis",
+                "model": "ProsusAI/finbert",
+                "device": device,
+            }
+
+            if use_cuda:
+                gpu_name = "unknown"
+                try:
+                    gpu_name = torch.cuda.get_device_name(0)
+                except Exception:
+                    pass
+                log.info("FinBERT using CUDA (GPU): %s", gpu_name)
+                if bool(getattr(config, "NLP_USE_FP16", True)):
+                    pipeline_kwargs["torch_dtype"] = torch.float16
+            else:
+                log.info("FinBERT using CPU.")
+
+            try:
+                self.pipeline = pipeline(**pipeline_kwargs)
+            except Exception as e:
+                if "torch_dtype" in pipeline_kwargs:
+                    log.warning("FinBERT FP16 init failed (%s). Retrying in float32.", e)
+                    pipeline_kwargs.pop("torch_dtype", None)
+                    self.pipeline = pipeline(**pipeline_kwargs)
+                else:
+                    raise
+
             FinBERTSentiment._instance = self
 
     def score_headlines(self, headlines: List[str]) -> float:
