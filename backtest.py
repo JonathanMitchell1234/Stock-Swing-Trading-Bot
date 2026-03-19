@@ -32,6 +32,7 @@ import sys
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
+import contextlib
 import numpy as np
 import pandas as pd
 
@@ -39,6 +40,24 @@ import config
 from indicators import compute_all, compute_weekly_trend, realized_volatility
 from strategy import check_entry as strategy_check_entry
 from logger import get_logger
+
+
+@contextlib.contextmanager
+def _override_config(overrides: dict):
+    """Temporarily patch the config module with the given key/value pairs."""
+    if not overrides:
+        yield
+        return
+    originals = {}
+    for key, val in overrides.items():
+        if hasattr(config, key):
+            originals[key] = getattr(config, key)
+            setattr(config, key, val)
+    try:
+        yield
+    finally:
+        for key, orig_val in originals.items():
+            setattr(config, key, orig_val)
 
 log = get_logger("backtest")
 
@@ -111,11 +130,13 @@ class Backtester:
         start_date: dt.date,
         end_date: dt.date,
         initial_capital: float = 300.0,
+        param_overrides: Optional[dict] = None,
     ) -> None:
         self.symbols = symbols
         self.start_date = start_date
         self.end_date = end_date
         self.initial_capital = initial_capital
+        self.param_overrides = param_overrides or {}
 
         # Portfolio state
         self.cash = initial_capital
@@ -701,6 +722,11 @@ class Backtester:
         Run the backtest across the date range.
         Returns a summary statistics dict.
         """
+        with _override_config(self.param_overrides):
+            return self._run_inner()
+
+    def _run_inner(self) -> dict:
+        """Internal backtest loop (called inside the override context)."""
         log.info("=" * 60)
         log.info("BACKTEST START")
         log.info("  Symbols    : %s", ", ".join(self.symbols))

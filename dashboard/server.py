@@ -499,6 +499,9 @@ from pydantic import BaseModel
 # Path where UI-driven overrides are persisted between restarts
 CONFIG_OVERRIDES_PATH = Path(__file__).parent.parent / "config_overrides.json"
 
+# Path where backtest-specific algorithm overrides are persisted
+BACKTEST_OVERRIDES_PATH = Path(__file__).parent.parent / "backtest_config_overrides.json"
+
 # All keys that the UI is allowed to read/write (never touch secrets or paths)
 _CONFIG_EDITABLE_KEYS = {
     # Indicators
@@ -636,6 +639,100 @@ async def reset_config():
         CONFIG_OVERRIDES_PATH.unlink()
     # Reload module from disk to restore defaults
     importlib.reload(config)
+    return {"ok": True}
+
+
+# ─────────────────────────────────────────────────────────────
+# Backtest-specific config endpoints
+# Independent parameters used only during backtests — never
+# touch the live bot settings.
+# ─────────────────────────────────────────────────────────────
+
+def _load_backtest_overrides() -> dict:
+    """Load persisted backtest-specific overrides (empty dict if none)."""
+    if BACKTEST_OVERRIDES_PATH.exists():
+        try:
+            return json.loads(BACKTEST_OVERRIDES_PATH.read_text())
+        except Exception:
+            return {}
+    return {}
+
+
+def _save_backtest_overrides(overrides: dict) -> None:
+    """Persist backtest-specific overrides to disk."""
+    BACKTEST_OVERRIDES_PATH.write_text(json.dumps(overrides, indent=2))
+
+
+@app.get("/api/backtest/config")
+async def get_backtest_config():
+    """
+    Return all editable backtest config values.
+    Falls back to the current live config value for any key that has
+    no backtest-specific override yet.
+    """
+    bt_overrides = _load_backtest_overrides()
+    result = {}
+    for key in sorted(_CONFIG_EDITABLE_KEYS):
+        # Prefer the backtest-specific override; fall back to live value
+        if key in bt_overrides:
+            result[key] = bt_overrides[key]
+        else:
+            result[key] = getattr(config, key, None)
+    return result
+
+
+class BacktestConfigPatchRequest(BaseModel):
+    updates: Dict[str, Any]
+
+
+@app.post("/api/backtest/config")
+async def patch_backtest_config(req: BacktestConfigPatchRequest):
+    """
+    Apply a partial update to the backtest-specific config.
+    Only keys in _CONFIG_EDITABLE_KEYS are accepted.
+    Changes are persisted to backtest_config_overrides.json and do NOT
+    affect the live running bot.
+    """
+    bad_keys = [k for k in req.updates if k not in _CONFIG_EDITABLE_KEYS]
+    if bad_keys:
+        raise HTTPException(status_code=400, detail=f"Non-editable keys: {bad_keys}")
+
+    overrides = _load_backtest_overrides()
+    for key, val in req.updates.items():
+        expected_type = type(getattr(config, key, None))
+        if expected_type is bool:
+            val = bool(val)
+        elif expected_type is int:
+            val = int(val)
+        elif expected_type is float:
+            val = float(val)
+        elif expected_type is str:
+            val = str(val)
+        overrides[key] = val
+
+    _save_backtest_overrides(overrides)
+    return {"ok": True, "applied": list(req.updates.keys())}
+
+
+@app.post("/api/backtest/config/clone-live")
+async def clone_live_to_backtest():
+    """
+    Copy all current live config values into the backtest-specific overrides,
+    making the backtest parameters an exact clone of the live bot settings.
+    """
+    live_snapshot = {key: getattr(config, key, None) for key in _CONFIG_EDITABLE_KEYS}
+    _save_backtest_overrides(live_snapshot)
+    return {"ok": True, "cloned_keys": len(live_snapshot)}
+
+
+@app.post("/api/backtest/config/reset")
+async def reset_backtest_config():
+    """
+    Remove all backtest-specific overrides, so the next backtest will
+    use defaults from config.py (same as the live bot baseline).
+    """
+    if BACKTEST_OVERRIDES_PATH.exists():
+        BACKTEST_OVERRIDES_PATH.unlink()
     return {"ok": True}
 
 
@@ -1177,11 +1274,15 @@ def _run_backtest_thread(req: BacktestRequest) -> None:
         start = _dt.date.fromisoformat(req.start)
         end   = _dt.date.fromisoformat(req.end)
 
+        # Load backtest-specific algorithm overrides (independent from live config)
+        bt_overrides = _load_backtest_overrides()
+
         bt = Backtester(
             symbols=symbols,
             start_date=start,
             end_date=end,
             initial_capital=req.capital,
+            param_overrides=bt_overrides,
         )
 
         # Patch _load_data to emit progress messages

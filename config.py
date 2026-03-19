@@ -88,6 +88,13 @@ EMA_SLOPE_PERIOD = 5            # bars to measure EMA-50 slope direction
 # ── Dead-money exit: sell stagnant positions ────────────────
 DEAD_MONEY_DAYS = 7             # reduced from 10 — free up capital faster
 DEAD_MONEY_THRESHOLD = 0.015    # tightened from 2% — exit if < 1.5% move in 7 days
+# After DEAD_MONEY_DAYS, how many soft signals are required to exit?
+# Set to 1 so that a stale position only needs ONE additional soft trigger
+# (e.g. below EMA-50, MACD declining) rather than two.
+DEAD_MONEY_SOFT_GATES = 1
+# Hard-exit a position that is BOTH stale (>= DEAD_MONEY_DAYS) AND losing
+# (price < entry) AND below EMA-50 — no second signal needed at all.
+STALE_LOSER_EXIT_ENABLED = True
 
 # ── Cooldown: don't re-enter a symbol within N days of exit ──
 RE_ENTRY_COOLDOWN_DAYS = 5
@@ -121,20 +128,22 @@ VIX_HALT_THRESHOLD = 35.0       # VIXY price above this → halt ALL new longs
 VIX_REDUCE_THRESHOLD = 22.0     # VIXY price above this → cut position size in half
 VIX_SIZE_SCALE = 0.50           # scale factor when VIXY > VIX_REDUCE_THRESHOLD
 
-# ── Inverse ETF bear-market mode ──────────────────────────
-# When the market regime turns bearish (SPY < SMA-200), the bot
-# switches to trading inverse ETFs instead of sitting in cash.
-# Entry/exit logic is identical — the same scoring system is used.
-# Size is reduced because inverse ETFs are more volatile instruments.
-INVERSE_ETF_MODE_ENABLED = True  # switch to inverse ETFs in bear markets
-INVERSE_ETF_SIZE_SCALE = 0.60    # trade at 60% of normal size (more volatile)
-INVERSE_WATCHLIST = [
-    "SQQQ",   # -3x Nasdaq (pairs with TQQQ/QQQ longs)
-    "SOXS",   # -3x Semiconductors (pairs with SOXL longs)
-    "SPXS",   # -3x S&P 500 (broad market short)
-    "SH",     # -1x S&P 500 (less volatile, safer bear play)
-    "PSQ",    # -1x Nasdaq (less volatile)
+# ── Bear-market short-selling mode ─────────────────────────
+# When the market regime turns bearish (SPY < EMA-200), the bot
+# switches to short-selling stocks from the main WATCHLIST using
+# an inverted scoring system (mirrors of the bull entry/exit logic).
+# Alpaca supports short selling on margin accounts.
+BEAR_SHORT_MODE_ENABLED = True    # enable short selling in bear markets
+BEAR_SHORT_SIZE_SCALE = 0.60      # trade at 60% of normal size (shorts are riskier)
+# Symbols that should NEVER be shorted (illiquid, hard to borrow, etc.)
+SHORT_BLACKLIST = [
+    "MARA", "RIVN",  # volatile / hard-to-borrow
 ]
+
+# Legacy — kept for config_overrides.json compatibility
+INVERSE_ETF_MODE_ENABLED = False
+INVERSE_ETF_SIZE_SCALE = 0.60
+INVERSE_WATCHLIST = []
 
 # ── Sector exposure limits ─────────────────────────────────
 MAX_PER_SECTOR = 99             # effectively disabled for testing
@@ -160,11 +169,18 @@ SECTOR_MAP = {
     "SPY": "ETF", "QQQ": "ETF", "IWM": "ETF", "XLF": "ETF",
     "XLE": "ETF", "XLK": "ETF", "TQQQ": "ETF", "SOXL": "ETF",
     "ARKK": "ETF", "VTI": "ETF", "VOO": "ETF", "DIA": "ETF",
-    # Inverse / volatility ETFs (bear-mode symbols)
-    "SQQQ": "InverseETF", "SOXS": "InverseETF", "SPXS": "InverseETF",
-    "SH": "InverseETF", "PSQ": "InverseETF",
     "VIXY": "ETF",   # VIX proxy used for the fear filter
 }
+
+# ── Bear-mode entry scoring overrides ─────────────────────
+# These mirror the bull-mode thresholds but for short entries.
+# RSI overbought zone for SHORT entry (stock is stretched, ready to drop)
+RSI_SHORT_ENTRY_MIN = 65          # short entry zone: RSI 65-85
+RSI_SHORT_ENTRY_MAX = 85
+# RSI oversold zone triggers SHORT exit (cover — stock is bouncing)
+RSI_SHORT_EXIT = 25               # cover if RSI drops below this
+# Gap filter for shorts — skip if stock gapped DOWN too much (exhaustion)
+GAP_DOWN_MAX_PCT = 0.08           # skip short if today gapped down > 8%
 
 # ── Support / Resistance ───────────────────────────────────
 SR_LOOKBACK = 20                # bars to detect swing highs/lows
@@ -179,6 +195,20 @@ DYNAMIC_THRESHOLD_ENABLED = False
 DYNAMIC_THRESHOLD_ADJUSTMENT = 1  # +/- this amount
 # In strong markets (SPY > EMA-50 and EMA-50 rising), lower threshold by 1
 # In weak/choppy markets the threshold stays at base (no increase)
+
+# ─────────────────────────────────────────────
+# Order Execution
+# ─────────────────────────────────────────────
+# Use limit orders for entries instead of market orders.
+# The limit price is set slightly above the last trade price so the
+# order fills quickly while still guaranteeing a price ceiling.
+USE_LIMIT_ORDERS = True             # True = limit buy, False = market buy
+LIMIT_ORDER_OFFSET_PCT = 0.001      # limit price = last_price * (1 + offset), e.g. 0.1% above
+LIMIT_ORDER_TIF = "day"             # time-in-force: "day" cancels at market close if unfilled
+
+# Delay new entries for N minutes after market open to avoid the
+# chaotic first-30-minute price discovery / spread-widening period.
+MARKET_OPEN_DELAY_MINUTES = 30      # 0 = no delay (enter as soon as market opens)
 
 # ─────────────────────────────────────────────
 # Risk Management
@@ -256,6 +286,15 @@ ML_BLEND_MODE = "gate"          # "gate" = both score+ML must pass; "replace" = 
 ML_FORWARD_BARS = 5             # forward bars for label generation
 ML_MIN_GAIN_PCT = 0.03          # label = 1 if close ≥ entry × (1 + this) within forward bars
 ML_TRAINING_MONTHS = 24         # months of history to use for training
+
+# ── Recency weighting: give more importance to recent data ──
+# Rows are up-weighted exponentially as they approach today.
+# The half-life controls how fast the weight decays into the past:
+#   e.g. 90 days → a bar from 90 days ago gets half the weight of today's bar.
+# Set ML_RECENCY_WEIGHT_ENABLED = False to revert to uniform weights.
+ML_RECENCY_WEIGHT_ENABLED = True
+ML_RECENCY_HALFLIFE_DAYS   = 90   # half-life in calendar days
+ML_RECENCY_MIN_WEIGHT      = 0.10  # floor: old bars never drop below this fraction of max weight
 
 # ─────────────────────────────────────────────
 # NLP Sentiment (FinBERT)

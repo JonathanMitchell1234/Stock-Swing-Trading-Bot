@@ -105,7 +105,9 @@ class FinBERTSentiment:
             return 0.0
             
         try:
-            results = self.pipeline(headlines)
+            # We pass the articles together in a single batch list but also use the torch.utils.data.Dataset internally
+            # or pass the batch_size to eliminate sequential processing warnings
+            results = self.pipeline(headlines, batch_size=len(headlines))
         except Exception as e:
             log.error("FinBERT model evaluation failed: %s", e)
             return 0.0

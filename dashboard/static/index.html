@@ -862,6 +862,36 @@
 				cursor: pointer;
 			}
 
+			/* bt-cfg-input mirrors cfg-input — same styling for backtest panel */
+			.bt-cfg-input {
+				background: var(--surface2);
+				border: 1px solid var(--border);
+				border-radius: 5px;
+				padding: 5px 8px;
+				color: var(--text);
+				font-size: 12px;
+				outline: none;
+				transition: border-color 0.15s;
+				font-family: var(--font);
+				width: 110px;
+				text-align: right;
+				flex-shrink: 0;
+			}
+
+			.bt-cfg-input:focus {
+				border-color: var(--blue);
+			}
+
+			.bt-cfg-input.changed {
+				border-color: var(--yellow);
+				color: var(--yellow);
+			}
+
+			select.bt-cfg-input {
+				text-align: left;
+				cursor: pointer;
+			}
+
 			.cfg-reset-btn {
 				background: none;
 				border: 1px solid var(--border);
@@ -2111,7 +2141,399 @@
 								<input type="text" id="bt-custom-syms" class="bt-input" placeholder="AAPL MSFT NVDA TSLA" />
 							</div>
 						</div>
-						<div class="bt-form-row" style="margin-top: 4px">
+
+						<!-- ── Backtest Algorithm Controls (collapsible) ── -->
+						<div id="bt-algo-wrap" style="border-top: 1px solid var(--border); margin-top: 14px; padding-top: 10px">
+							<div
+								id="bt-algo-toggle-row"
+								onclick="toggleBtAlgo()"
+								style="cursor: pointer; display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px"
+							>
+								<span style="font-size: 12px; font-weight: 600; color: var(--text)">⚙ Backtest Algorithm Controls</span>
+								<div style="display: flex; gap: 8px; align-items: center" onclick="event.stopPropagation()">
+									<span id="bt-cfg-save-status" style="font-size: 11px; color: var(--muted)"></span>
+									<button class="refresh-btn" onclick="loadBtConfig()">↻ Reload</button>
+									<button
+										class="bt-run-btn"
+										style="font-size: 11px; padding: 4px 12px; background: var(--blue)"
+										onclick="cloneLiveConfig()"
+									>
+										⬇ Clone from Live Model
+									</button>
+									<button
+										class="cfg-reset-btn"
+										onclick="resetBtConfig()"
+									>
+										Reset
+									</button>
+									<span id="bt-algo-toggle-icon" style="color: var(--muted); font-size: 13px; padding: 0 4px; cursor: pointer" onclick="event.stopPropagation(); toggleBtAlgo()">▶</span>
+								</div>
+							</div>
+							<div id="bt-algo-body" style="display: none">
+								<!-- Tab bar -->
+								<div class="tabs" id="bt-cfg-tabs" style="margin-top: 8px">
+									<button class="tab-btn active" data-bttab="bt-cfg-indicators">Indicators</button>
+									<button class="tab-btn" data-bttab="bt-cfg-entry">Entry Scoring</button>
+									<button class="tab-btn" data-bttab="bt-cfg-exit">Exit &amp; Hold</button>
+									<button class="tab-btn" data-bttab="bt-cfg-risk">Risk</button>
+									<button class="tab-btn" data-bttab="bt-cfg-regime">Regime &amp; VIX</button>
+									<button class="tab-btn" data-bttab="bt-cfg-universe">Universe</button>
+								</div>
+
+								<!-- Tab: Indicators -->
+								<div class="tab-panel active" id="bt-cfg-indicators">
+									<div class="cfg-grid">
+										<div class="cfg-section-title">EMA Periods</div>
+										<div class="cfg-row">
+											<label class="cfg-label">Fast EMA<span class="cfg-hint">Short momentum</span></label
+											><input type="number" class="bt-cfg-input" data-btkey="EMA_FAST" min="3" max="30" step="1" />
+										</div>
+										<div class="cfg-row">
+											<label class="cfg-label">Slow EMA<span class="cfg-hint">Crossover baseline</span></label
+											><input type="number" class="bt-cfg-input" data-btkey="EMA_SLOW" min="10" max="60" step="1" />
+										</div>
+										<div class="cfg-row">
+											<label class="cfg-label">Trend EMA<span class="cfg-hint">Long-term trend filter</span></label
+											><input type="number" class="bt-cfg-input" data-btkey="EMA_TREND" min="20" max="100" step="1" />
+										</div>
+										<div class="cfg-row">
+											<label class="cfg-label">Long EMA<span class="cfg-hint">Regime / super-trend</span></label
+											><input type="number" class="bt-cfg-input" data-btkey="EMA_LONG" min="100" max="400" step="10" />
+										</div>
+										<div class="cfg-section-title">RSI</div>
+										<div class="cfg-row">
+											<label class="cfg-label">RSI Period<span class="cfg-hint">Default 14</span></label
+											><input type="number" class="bt-cfg-input" data-btkey="RSI_PERIOD" min="5" max="30" step="1" />
+										</div>
+										<div class="cfg-row">
+											<label class="cfg-label">Oversold<span class="cfg-hint">Buy zone ≤ N</span></label
+											><input type="number" class="bt-cfg-input" data-btkey="RSI_OVERSOLD" min="10" max="50" step="1" />
+										</div>
+										<div class="cfg-row">
+											<label class="cfg-label">Overbought<span class="cfg-hint">Sell zone ≥ N</span></label
+											><input type="number" class="bt-cfg-input" data-btkey="RSI_OVERBOUGHT" min="60" max="95" step="1" />
+										</div>
+										<div class="cfg-section-title">MACD</div>
+										<div class="cfg-row">
+											<label class="cfg-label">MACD Fast<span class="cfg-hint">Default 12</span></label
+											><input type="number" class="bt-cfg-input" data-btkey="MACD_FAST" min="5" max="30" step="1" />
+										</div>
+										<div class="cfg-row">
+											<label class="cfg-label">MACD Slow<span class="cfg-hint">Default 26</span></label
+											><input type="number" class="bt-cfg-input" data-btkey="MACD_SLOW" min="15" max="60" step="1" />
+										</div>
+										<div class="cfg-row">
+											<label class="cfg-label">MACD Signal<span class="cfg-hint">Default 9</span></label
+											><input type="number" class="bt-cfg-input" data-btkey="MACD_SIGNAL" min="3" max="20" step="1" />
+										</div>
+										<div class="cfg-section-title">ATR (Stops &amp; Targets)</div>
+										<div class="cfg-row">
+											<label class="cfg-label">ATR Period<span class="cfg-hint">Default 14</span></label
+											><input type="number" class="bt-cfg-input" data-btkey="ATR_PERIOD" min="5" max="30" step="1" />
+										</div>
+										<div class="cfg-row">
+											<label class="cfg-label">Stop Multiplier<span class="cfg-hint">Entry − ATR × N</span></label
+											><input type="number" class="bt-cfg-input" data-btkey="ATR_STOP_MULTIPLIER" min="1" max="6" step="0.5" />
+										</div>
+										<div class="cfg-row">
+											<label class="cfg-label">Profit Multiplier<span class="cfg-hint">Target = Entry + ATR × N</span></label
+											><input type="number" class="bt-cfg-input" data-btkey="ATR_PROFIT_MULTIPLIER" min="2" max="15" step="0.5" />
+										</div>
+										<div class="cfg-section-title">Volume</div>
+										<div class="cfg-row">
+											<label class="cfg-label">Volume SMA Period</label
+											><input type="number" class="bt-cfg-input" data-btkey="VOLUME_SMA_PERIOD" min="5" max="50" step="1" />
+										</div>
+										<div class="cfg-row">
+											<label class="cfg-label">Volume Surge Factor<span class="cfg-hint">1.0 = any volume ok</span></label
+											><input type="number" class="bt-cfg-input" data-btkey="VOLUME_SURGE_FACTOR" min="0.5" max="3" step="0.1" />
+										</div>
+									</div>
+								</div>
+
+								<!-- Tab: Entry Scoring -->
+								<div class="tab-panel" id="bt-cfg-entry">
+									<div class="cfg-grid">
+										<div class="cfg-section-title">Scoring</div>
+										<div class="cfg-row">
+											<label class="cfg-label">Score Threshold<span class="cfg-hint">Min score to open position</span></label
+											><input type="number" class="bt-cfg-input" data-btkey="ENTRY_SCORE_THRESHOLD" min="2" max="14" step="1" />
+										</div>
+										<div class="cfg-row">
+											<label class="cfg-label">Dynamic Threshold<span class="cfg-hint">Adjust bar by market quality</span></label
+											><select class="bt-cfg-input" data-btkey="DYNAMIC_THRESHOLD_ENABLED">
+												<option value="true">Enabled</option>
+												<option value="false">Disabled</option>
+											</select>
+										</div>
+										<div class="cfg-row">
+											<label class="cfg-label">Dynamic Adjustment<span class="cfg-hint">±N in strong/weak market</span></label
+											><input type="number" class="bt-cfg-input" data-btkey="DYNAMIC_THRESHOLD_ADJUSTMENT" min="1" max="3" step="1" />
+										</div>
+										<div class="cfg-section-title">Momentum</div>
+										<div class="cfg-row">
+											<label class="cfg-label">Momentum Lookback<span class="cfg-hint">Days for rate-of-change</span></label
+											><input type="number" class="bt-cfg-input" data-btkey="MOMENTUM_LOOKBACK" min="5" max="60" step="1" />
+										</div>
+										<div class="cfg-row">
+											<label class="cfg-label">Momentum Top %<span class="cfg-hint">Only top N% by momentum</span></label
+											><input type="number" class="bt-cfg-input" data-btkey="MOMENTUM_TOP_PCT" min="0.1" max="1" step="0.05" />
+										</div>
+										<div class="cfg-row">
+											<label class="cfg-label">Momentum Score Bonus<span class="cfg-hint">Extra points for top quartile</span></label
+											><input type="number" class="bt-cfg-input" data-btkey="MOMENTUM_SCORE_WEIGHT" min="0" max="5" step="1" />
+										</div>
+										<div class="cfg-section-title">Filters</div>
+										<div class="cfg-row">
+											<label class="cfg-label">EMA Slope Period<span class="cfg-hint">Bars to measure EMA-50 slope</span></label
+											><input type="number" class="bt-cfg-input" data-btkey="EMA_SLOPE_PERIOD" min="2" max="20" step="1" />
+										</div>
+										<div class="cfg-row">
+											<label class="cfg-label">Max Gap Up %<span class="cfg-hint">Skip if gapped up > N%</span></label
+											><input type="number" class="bt-cfg-input" data-btkey="GAP_UP_MAX_PCT" min="0.01" max="0.3" step="0.01" />
+										</div>
+										<div class="cfg-row">
+											<label class="cfg-label">S/R Lookback<span class="cfg-hint">Bars for swing high/low</span></label
+											><input type="number" class="bt-cfg-input" data-btkey="SR_LOOKBACK" min="5" max="50" step="1" />
+										</div>
+										<div class="cfg-row">
+											<label class="cfg-label">Resistance Buffer %<span class="cfg-hint">Penalise entries near resistance</span></label
+											><input type="number" class="bt-cfg-input" data-btkey="SR_RESISTANCE_BUFFER" min="0" max="0.05" step="0.005" />
+										</div>
+										<div class="cfg-section-title">Multi-Timeframe</div>
+										<div class="cfg-row">
+											<label class="cfg-label">Weekly Trend Filter<span class="cfg-hint">Require weekly uptrend</span></label
+											><select class="bt-cfg-input" data-btkey="WEEKLY_TREND_ENABLED">
+												<option value="true">Enabled</option>
+												<option value="false">Disabled</option>
+											</select>
+										</div>
+									</div>
+								</div>
+
+								<!-- Tab: Exit & Hold -->
+								<div class="tab-panel" id="bt-cfg-exit">
+									<div class="cfg-grid">
+										<div class="cfg-section-title">Trailing Stops</div>
+										<div class="cfg-row">
+											<label class="cfg-label">Activate at Gain %<span class="cfg-hint">Start trailing after N% profit</span></label
+											><input type="number" class="bt-cfg-input" data-btkey="TRAILING_STOP_ACTIVATE_PCT" min="0.02" max="0.2" step="0.01" />
+										</div>
+										<div class="cfg-row">
+											<label class="cfg-label">Trail %<span class="cfg-hint">Trail by N% once active</span></label
+											><input type="number" class="bt-cfg-input" data-btkey="TRAILING_STOP_PCT" min="0.01" max="0.15" step="0.005" />
+										</div>
+										<div class="cfg-row">
+											<label class="cfg-label">Tight Activate at Gain %<span class="cfg-hint">Tighten trail above N%</span></label
+											><input type="number" class="bt-cfg-input" data-btkey="TRAILING_STOP_TIGHT_ACTIVATE" min="0.05" max="0.4" step="0.01" />
+										</div>
+										<div class="cfg-row">
+											<label class="cfg-label">Tight Trail %<span class="cfg-hint">Tighter trail %</span></label
+											><input type="number" class="bt-cfg-input" data-btkey="TRAILING_STOP_TIGHT_PCT" min="0.01" max="0.1" step="0.005" />
+										</div>
+										<div class="cfg-section-title">Dead-Money Exit</div>
+										<div class="cfg-row">
+											<label class="cfg-label">Dead Money Days<span class="cfg-hint">Exit if flat after N days</span></label
+											><input type="number" class="bt-cfg-input" data-btkey="DEAD_MONEY_DAYS" min="3" max="30" step="1" />
+										</div>
+										<div class="cfg-row">
+											<label class="cfg-label">Dead Money Threshold %<span class="cfg-hint">Exit if move &lt; N% in that window</span></label
+											><input type="number" class="bt-cfg-input" data-btkey="DEAD_MONEY_THRESHOLD" min="0.005" max="0.1" step="0.005" />
+										</div>
+										<div class="cfg-section-title">Re-entry / Hold Rules</div>
+										<div class="cfg-row">
+											<label class="cfg-label">Re-entry Cooldown Days<span class="cfg-hint">Don't re-enter symbol within N days</span></label
+											><input type="number" class="bt-cfg-input" data-btkey="RE_ENTRY_COOLDOWN_DAYS" min="0" max="30" step="1" />
+										</div>
+										<div class="cfg-row">
+											<label class="cfg-label">Min Hold Calendar Days<span class="cfg-hint">PDT guard — hold at least N days</span></label
+											><input type="number" class="bt-cfg-input" data-btkey="MIN_HOLD_CALENDAR_DAYS" min="1" max="10" step="1" />
+										</div>
+									</div>
+								</div>
+
+								<!-- Tab: Risk -->
+								<div class="tab-panel" id="bt-cfg-risk">
+									<div class="cfg-grid">
+										<div class="cfg-section-title">Position Limits</div>
+										<div class="cfg-row">
+											<label class="cfg-label">Max Open Positions</label
+											><input type="number" class="bt-cfg-input" data-btkey="MAX_OPEN_POSITIONS" min="1" max="50" step="1" />
+										</div>
+										<div class="cfg-row">
+											<label class="cfg-label">Max Position % of Equity</label
+											><input type="number" class="bt-cfg-input" data-btkey="MAX_POSITION_PCT" min="0.02" max="1" step="0.01" />
+										</div>
+										<div class="cfg-row">
+											<label class="cfg-label">Max Portfolio Risk %</label
+											><input type="number" class="bt-cfg-input" data-btkey="MAX_PORTFOLIO_RISK_PCT" min="0.01" max="0.2" step="0.01" />
+										</div>
+										<div class="cfg-row">
+											<label class="cfg-label">Max Loss Per Trade %</label
+											><input type="number" class="bt-cfg-input" data-btkey="MAX_LOSS_PER_TRADE_PCT" min="0.005" max="0.1" step="0.005" />
+										</div>
+										<div class="cfg-row">
+											<label class="cfg-label">Max Portfolio Exposure %</label
+											><input type="number" class="bt-cfg-input" data-btkey="MAX_PORTFOLIO_EXPOSURE_PCT" min="0.5" max="1" step="0.01" />
+										</div>
+										<div class="cfg-row">
+											<label class="cfg-label">Max Sector Positions</label
+											><input type="number" class="bt-cfg-input" data-btkey="MAX_PER_SECTOR" min="1" max="99" step="1" />
+										</div>
+										<div class="cfg-section-title">Small Account (equity &lt; threshold)</div>
+										<div class="cfg-row">
+											<label class="cfg-label">Small Account Threshold $<span class="cfg-hint">Below this = small-account rules</span></label
+											><input type="number" class="bt-cfg-input" data-btkey="SMALL_ACCOUNT_THRESHOLD" min="100" max="50000" step="100" />
+										</div>
+										<div class="cfg-row">
+											<label class="cfg-label">Fractional Shares<span class="cfg-hint">Use fractional positions</span></label
+											><select class="bt-cfg-input" data-btkey="FRACTIONAL_SHARES">
+												<option value="true">Enabled</option>
+												<option value="false">Disabled</option>
+											</select>
+										</div>
+										<div class="cfg-row">
+											<label class="cfg-label">Small Max Positions</label
+											><input type="number" class="bt-cfg-input" data-btkey="SMALL_MAX_OPEN_POSITIONS" min="1" max="10" step="1" />
+										</div>
+										<div class="cfg-row">
+											<label class="cfg-label">Small Max Position %</label
+											><input type="number" class="bt-cfg-input" data-btkey="SMALL_MAX_POSITION_PCT" min="0.05" max="1" step="0.05" />
+										</div>
+										<div class="cfg-row">
+											<label class="cfg-label">Small Max Loss/Trade %</label
+											><input type="number" class="bt-cfg-input" data-btkey="SMALL_MAX_LOSS_PER_TRADE_PCT" min="0.005" max="0.1" step="0.005" />
+										</div>
+										<div class="cfg-row">
+											<label class="cfg-label">Small ATR Stop Mult</label
+											><input type="number" class="bt-cfg-input" data-btkey="SMALL_ATR_STOP_MULTIPLIER" min="0.5" max="5" step="0.5" />
+										</div>
+										<div class="cfg-row">
+											<label class="cfg-label">Small ATR Profit Mult</label
+											><input type="number" class="bt-cfg-input" data-btkey="SMALL_ATR_PROFIT_MULTIPLIER" min="1" max="10" step="0.5" />
+										</div>
+										<div class="cfg-section-title">PDT Guard</div>
+										<div class="cfg-row">
+											<label class="cfg-label">Max Day Trades Allowed</label
+											><input type="number" class="bt-cfg-input" data-btkey="MAX_DAY_TRADES_ALLOWED" min="0" max="3" step="1" />
+										</div>
+										<div class="cfg-row">
+											<label class="cfg-label">PDT Lookback Days</label
+											><input type="number" class="bt-cfg-input" data-btkey="PDT_LOOKBACK_DAYS" min="3" max="10" step="1" />
+										</div>
+									</div>
+								</div>
+
+								<!-- Tab: Regime & VIX -->
+								<div class="tab-panel" id="bt-cfg-regime">
+									<div class="cfg-grid">
+										<div class="cfg-section-title">Market Regime (SPY SMA-200)</div>
+										<div class="cfg-row">
+											<label class="cfg-label">Regime Filter<span class="cfg-hint">Block longs in bear market</span></label
+											><select class="bt-cfg-input" data-btkey="MARKET_REGIME_ENABLED">
+												<option value="true">Enabled</option>
+												<option value="false">Disabled</option>
+											</select>
+										</div>
+										<div class="cfg-row">
+											<label class="cfg-label">Regime Symbol<span class="cfg-hint">Default SPY</span></label
+											><input type="text" class="bt-cfg-input" data-btkey="MARKET_REGIME_SYMBOL" />
+										</div>
+										<div class="cfg-section-title">VIX Fear Filter (VIXY)</div>
+										<div class="cfg-row">
+											<label class="cfg-label">VIX Filter<span class="cfg-hint">Halt / reduce on high volatility</span></label
+											><select class="bt-cfg-input" data-btkey="VIX_FILTER_ENABLED">
+												<option value="true">Enabled</option>
+												<option value="false">Disabled</option>
+											</select>
+										</div>
+										<div class="cfg-row">
+											<label class="cfg-label">VIX Symbol<span class="cfg-hint">Alpaca proxy, default VIXY</span></label
+											><input type="text" class="bt-cfg-input" data-btkey="VIX_SYMBOL" />
+										</div>
+										<div class="cfg-row">
+											<label class="cfg-label">Halt Threshold<span class="cfg-hint">VIXY ≥ N → stop all new longs</span></label
+											><input type="number" class="bt-cfg-input" data-btkey="VIX_HALT_THRESHOLD" min="20" max="80" step="1" />
+										</div>
+										<div class="cfg-row">
+											<label class="cfg-label">Reduce Threshold<span class="cfg-hint">VIXY ≥ N → cut size</span></label
+											><input type="number" class="bt-cfg-input" data-btkey="VIX_REDUCE_THRESHOLD" min="10" max="60" step="1" />
+										</div>
+										<div class="cfg-row">
+											<label class="cfg-label">VIX Size Scale<span class="cfg-hint">Position size when reduced</span></label
+											><input type="number" class="bt-cfg-input" data-btkey="VIX_SIZE_SCALE" min="0.1" max="1" step="0.05" />
+										</div>
+										<div class="cfg-section-title">Volatility Regime</div>
+										<div class="cfg-row">
+											<label class="cfg-label">Vol Regime Sizing<span class="cfg-hint">Adapt size to realised vol</span></label
+											><select class="bt-cfg-input" data-btkey="VOL_REGIME_ENABLED">
+												<option value="true">Enabled</option>
+												<option value="false">Disabled</option>
+											</select>
+										</div>
+										<div class="cfg-row">
+											<label class="cfg-label">Vol Window Days</label
+											><input type="number" class="bt-cfg-input" data-btkey="REALIZED_VOL_WINDOW" min="5" max="60" step="1" />
+										</div>
+										<div class="cfg-row">
+											<label class="cfg-label">High Vol Threshold<span class="cfg-hint">Ann. vol above N = high</span></label
+											><input type="number" class="bt-cfg-input" data-btkey="HIGH_VOL_THRESHOLD" min="0.1" max="0.8" step="0.05" />
+										</div>
+										<div class="cfg-row">
+											<label class="cfg-label">Low Vol Threshold<span class="cfg-hint">Ann. vol below N = low</span></label
+											><input type="number" class="bt-cfg-input" data-btkey="LOW_VOL_THRESHOLD" min="0.05" max="0.3" step="0.01" />
+										</div>
+										<div class="cfg-row">
+											<label class="cfg-label">High Vol Size Scale</label
+											><input type="number" class="bt-cfg-input" data-btkey="HIGH_VOL_SIZE_SCALE" min="0.3" max="1" step="0.05" />
+										</div>
+										<div class="cfg-row">
+											<label class="cfg-label">Low Vol Size Scale</label
+											><input type="number" class="bt-cfg-input" data-btkey="LOW_VOL_SIZE_SCALE" min="1" max="1.5" step="0.05" />
+										</div>
+										<div class="cfg-section-title">Inverse ETF Bear Mode</div>
+										<div class="cfg-row">
+											<label class="cfg-label">Inverse ETF Mode<span class="cfg-hint">Trade inverse ETFs in bear market</span></label
+											><select class="bt-cfg-input" data-btkey="INVERSE_ETF_MODE_ENABLED">
+												<option value="true">Enabled</option>
+												<option value="false">Disabled</option>
+											</select>
+										</div>
+										<div class="cfg-row">
+											<label class="cfg-label">Inverse ETF Size Scale<span class="cfg-hint">Fraction of normal size</span></label
+											><input type="number" class="bt-cfg-input" data-btkey="INVERSE_ETF_SIZE_SCALE" min="0.1" max="1" step="0.05" />
+										</div>
+									</div>
+								</div>
+
+								<!-- Tab: Universe -->
+								<div class="tab-panel" id="bt-cfg-universe">
+									<div class="cfg-grid">
+										<div class="cfg-section-title">Screener Filters</div>
+										<div class="cfg-row">
+											<label class="cfg-label">Min Price $<span class="cfg-hint">Skip stocks below this price</span></label
+											><input type="number" class="bt-cfg-input" data-btkey="MIN_PRICE" min="0.5" max="50" step="0.5" />
+										</div>
+										<div class="cfg-row">
+											<label class="cfg-label">Max Price $<span class="cfg-hint">Skip stocks above this price</span></label
+											><input type="number" class="bt-cfg-input" data-btkey="MAX_PRICE" min="50" max="10000" step="50" />
+										</div>
+										<div class="cfg-row">
+											<label class="cfg-label">Min Avg Volume<span class="cfg-hint">Skip illiquid names</span></label
+											><input type="number" class="bt-cfg-input" data-btkey="MIN_AVG_VOLUME" min="50000" max="10000000" step="50000" />
+										</div>
+									</div>
+								</div>
+
+								<!-- Save bar -->
+								<div style="padding: 12px 20px 8px; border-top: 1px solid var(--border); display: flex; gap: 10px; align-items: center; margin-top: 8px">
+									<button class="bt-run-btn" onclick="saveBtConfig()" id="bt-cfg-save-btn">💾 Save Backtest Config</button>
+									<span style="font-size: 11px; color: var(--muted); margin-left: auto">Saved to <code>backtest_config_overrides.json</code> — does not affect the live bot.</span>
+								</div>
+							</div>
+						</div>
+
+						<div class="bt-form-row" style="margin-top: 12px">
 							<button class="bt-run-btn" id="bt-run-btn" onclick="runBacktest()">▶ Run Backtest</button>
 							<button class="bt-reset-btn" id="bt-reset-btn" onclick="resetBacktest()" style="display: none">✕ Clear</button>
 						</div>
@@ -2716,6 +3138,7 @@
 				loadOrders();
 				loadLogs();
 				loadConfig();
+				loadBtConfig();
 				loadWatchlistEditor();
 
 				// Bot control — load status then pre-fill buffered logs
@@ -3000,6 +3423,175 @@
 					$("cfg-save-status").textContent = "Error: " + e.message;
 					$("cfg-save-status").style.color = "var(--red)";
 				}
+			}
+
+			/* ═══════════════════════════════════════════════════════════
+			   BACKTEST ALGORITHM CONFIG
+			   Separate param store — never touches the live bot settings.
+			   ═══════════════════════════════════════════════════════════ */
+
+			let _btCfgOriginal = {};
+			let _btCfgPending  = {};
+
+			// Wire backtest config tabs
+			document.querySelectorAll("#bt-cfg-tabs .tab-btn").forEach((btn) => {
+				btn.addEventListener("click", () => {
+					document.querySelectorAll("#bt-cfg-tabs .tab-btn").forEach((b) => b.classList.remove("active"));
+					document.querySelectorAll("#bt-algo-body .tab-panel").forEach((p) => p.classList.remove("active"));
+					btn.classList.add("active");
+					$(btn.dataset.bttab).classList.add("active");
+				});
+			});
+
+			// Mark field dirty when changed
+			document.querySelectorAll(".bt-cfg-input").forEach((inp) => {
+				inp.addEventListener("input", () => {
+					const key  = inp.dataset.btkey;
+					const orig = _btCfgOriginal[key];
+					const cur  = _btCfgCoerce(key, inp.value);
+					if (orig !== undefined && String(cur) !== String(orig)) {
+						inp.classList.add("changed");
+						_btCfgPending[key] = cur;
+					} else {
+						inp.classList.remove("changed");
+						delete _btCfgPending[key];
+					}
+					_updateBtSaveStatus();
+				});
+			});
+
+			function _btCfgCoerce(key, raw) {
+				const orig = _btCfgOriginal[key];
+				if (typeof orig === "boolean" || raw === "true" || raw === "false") return raw === "true" || raw === true;
+				if (typeof orig === "number") return Number(raw);
+				return raw;
+			}
+
+			function _updateBtSaveStatus() {
+				const n = Object.keys(_btCfgPending).length;
+				const el = $("bt-cfg-save-status");
+				if (!el) return;
+				el.textContent = n > 0 ? `${n} unsaved change${n > 1 ? "s" : ""}` : "";
+				el.style.color  = n > 0 ? "var(--yellow)" : "var(--muted)";
+			}
+
+			function _populateBtCfgInputs(cfg) {
+				document.querySelectorAll(".bt-cfg-input").forEach((inp) => {
+					const key = inp.dataset.btkey;
+					if (!(key in cfg)) return;
+					const val = cfg[key];
+					if (inp.tagName === "SELECT") {
+						inp.value = String(val);
+					} else {
+						inp.value = val;
+					}
+					inp.classList.remove("changed");
+				});
+			}
+
+			async function loadBtConfig() {
+				try {
+					const cfg = await apiFetch("/api/backtest/config");
+					_btCfgOriginal = cfg;
+					_btCfgPending  = {};
+					_populateBtCfgInputs(cfg);
+					_updateBtSaveStatus();
+				} catch (e) {
+					const el = $("bt-cfg-save-status");
+					if (el) { el.textContent = "Error loading"; el.style.color = "var(--red)"; }
+				}
+			}
+
+			async function saveBtConfig() {
+				// Save currently-pending changes, or the full set if nothing pending
+				const toSave = Object.keys(_btCfgPending).length > 0 ? _btCfgPending : _collectAllBtCfg();
+				if (Object.keys(toSave).length === 0) {
+					$("bt-cfg-save-status").textContent = "No changes to save.";
+					return;
+				}
+				const btn = $("bt-cfg-save-btn");
+				btn.disabled  = true;
+				btn.textContent = "Saving…";
+				try {
+					const resp = await fetch("/api/backtest/config", {
+						method:  "POST",
+						headers: { "Content-Type": "application/json" },
+						body:    JSON.stringify({ updates: toSave }),
+					});
+					if (!resp.ok) {
+						const err = await resp.json();
+						throw new Error(err.detail || resp.statusText);
+					}
+					Object.assign(_btCfgOriginal, toSave);
+					_btCfgPending = {};
+					document.querySelectorAll(".bt-cfg-input.changed").forEach((el) => el.classList.remove("changed"));
+					const st = $("bt-cfg-save-status");
+					st.textContent = "✓ Saved";
+					st.style.color  = "var(--green)";
+					setTimeout(() => { if (st.textContent.startsWith("✓")) st.textContent = ""; }, 3000);
+				} catch (e) {
+					const st = $("bt-cfg-save-status");
+					st.textContent = "Error: " + e.message;
+					st.style.color  = "var(--red)";
+				} finally {
+					btn.disabled  = false;
+					btn.textContent = "💾 Save Backtest Config";
+				}
+			}
+
+			function _collectAllBtCfg() {
+				const all = {};
+				document.querySelectorAll(".bt-cfg-input").forEach((inp) => {
+					const key = inp.dataset.btkey;
+					if (!key) return;
+					all[key] = _btCfgCoerce(key, inp.value);
+				});
+				return all;
+			}
+
+			async function cloneLiveConfig() {
+				if (!confirm("Copy all current live algorithm parameters into the backtest controls? This will overwrite any existing backtest-specific settings.")) return;
+				try {
+					const resp = await fetch("/api/backtest/config/clone-live", { method: "POST" });
+					if (!resp.ok) throw new Error((await resp.json()).detail || resp.statusText);
+					await loadBtConfig();
+					const st = $("bt-cfg-save-status");
+					st.textContent = "✓ Cloned from live model";
+					st.style.color  = "var(--green)";
+					// Expand panel so user can see the cloned values
+					const body = $("bt-algo-body");
+					if (body && body.style.display === "none") toggleBtAlgo();
+					setTimeout(() => { if (st.textContent.startsWith("✓")) st.textContent = ""; }, 3000);
+				} catch (e) {
+					const st = $("bt-cfg-save-status");
+					st.textContent = "Error: " + e.message;
+					st.style.color  = "var(--red)";
+				}
+			}
+
+			async function resetBtConfig() {
+				if (!confirm("Reset backtest config to live model defaults? Backtest-specific overrides will be removed.")) return;
+				try {
+					await fetch("/api/backtest/config/reset", { method: "POST" });
+					await loadBtConfig();
+					const st = $("bt-cfg-save-status");
+					st.textContent = "✓ Reset to live defaults";
+					st.style.color  = "var(--green)";
+					setTimeout(() => { if (st.textContent.startsWith("✓")) st.textContent = ""; }, 3000);
+				} catch (e) {
+					const st = $("bt-cfg-save-status");
+					st.textContent = "Error: " + e.message;
+					st.style.color  = "var(--red)";
+				}
+			}
+
+			function toggleBtAlgo() {
+				const body = $("bt-algo-body");
+				const icon = $("bt-algo-toggle-icon");
+				if (!body) return;
+				const open = body.style.display !== "none";
+				body.style.display = open ? "none" : "block";
+				if (icon) icon.textContent = open ? "▶" : "▼";
 			}
 
 			/* ═══════════════════════════════════════════════════════════

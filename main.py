@@ -116,23 +116,38 @@ def run_loop() -> None:
     global _executor
     _executor = executor
     _morning_done_date: list[dt.date] = [None]  # mutable container for closure
+    _last_full_cycle_time: list[float] = [0.0]   # timestamp of last full_cycle run
 
     def morning_job():
-        today = dt.date.today()
-        if _morning_done_date[0] == today:
-            return  # already ran today
-        if executor.broker.is_market_open():
-            log.info("Running morning tasks for %s", today)
-            executor.morning_tasks()
-            _morning_done_date[0] = today
+        try:
+            today = dt.date.today()
+            if _morning_done_date[0] == today:
+                return  # already ran today
+            if executor.broker.is_market_open():
+                log.info("Running morning tasks for %s", today)
+                executor.morning_tasks()
+                _morning_done_date[0] = today
+        except Exception as exc:
+            log.error("morning_job failed (will retry next cycle): %s", exc, exc_info=True)
 
     def exit_check():
-        if executor.broker.is_market_open():
-            executor.refresh()
-            executor.scan_exits()
+        try:
+            # Skip if a full_cycle ran very recently (within 60s) to avoid
+            # double exit scans that could submit duplicate sell orders.
+            if time.time() - _last_full_cycle_time[0] < 60:
+                return
+            if executor.broker.is_market_open():
+                executor.refresh()
+                executor.scan_exits()
+        except Exception as exc:
+            log.error("exit_check failed (will retry next cycle): %s", exc, exc_info=True)
 
     def full_cycle():
-        executor.run_cycle()
+        try:
+            executor.run_cycle()
+            _last_full_cycle_time[0] = time.time()
+        except Exception as exc:
+            log.error("full_cycle failed (will retry next cycle): %s", exc, exc_info=True)
 
     # Schedule jobs
     schedule.every(5).minutes.do(morning_job)          # poll until market opens & runs once

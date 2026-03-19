@@ -113,6 +113,68 @@ class RiskManager:
         mult = config.get_atr_profit_mult(self.equity)
         return round(entry + atr * mult, 2)
 
+    # ── SHORT-specific stop / target ─────────────────────────
+    def compute_short_stop_loss(self, entry: float, atr: float) -> float:
+        """ATR-based stop loss for shorts — ABOVE entry price (buy-to-cover)."""
+        mult = config.get_atr_stop_mult(self.equity)
+        return round(entry + atr * mult, 2)
+
+    def compute_short_take_profit(self, entry: float, atr: float) -> float:
+        """ATR-based profit target for shorts — BELOW entry price."""
+        mult = config.get_atr_profit_mult(self.equity)
+        return round(entry - atr * mult, 2)
+
+    def calculate_short_position_size(
+        self,
+        entry_price: float,
+        stop_price: float,
+        buying_power: float,
+    ) -> float:
+        """
+        Size a SHORT position so that if the stop is hit, the loss equals
+        get_risk_per_trade() of equity.
+
+        For shorts, stop_price is ABOVE entry_price (buy-to-cover on adverse move).
+        """
+        if entry_price <= 0 or stop_price <= 0 or stop_price <= entry_price:
+            log.warning(
+                "Invalid prices for short sizing: entry=%.2f stop=%.2f",
+                entry_price, stop_price,
+            )
+            return 0
+
+        risk_per_share = stop_price - entry_price
+        if risk_per_share <= 0:
+            return 0
+
+        risk_pct = config.get_risk_per_trade(self.equity)
+        pos_pct = config.get_position_pct(self.equity)
+
+        max_risk_dollars = self.equity * risk_pct
+        shares_by_risk = max_risk_dollars / risk_per_share
+
+        max_position_value = self.equity * pos_pct
+        shares_by_value = max_position_value / entry_price
+
+        usable_bp = buying_power * config.MAX_PORTFOLIO_EXPOSURE_PCT
+        shares_by_bp = usable_bp / entry_price
+
+        qty_raw = min(shares_by_risk, shares_by_value, shares_by_bp)
+
+        if config.FRACTIONAL_SHARES:
+            qty = round(qty_raw, 3)
+        else:
+            qty = math.floor(qty_raw)
+
+        qty = max(0, qty)
+
+        log.info(
+            "Short sizing: risk=%.3f  value=%.3f  bp=%.3f -> qty=%.3f  (entry=%.2f  stop=%.2f)",
+            shares_by_risk, shares_by_value, shares_by_bp,
+            qty, entry_price, stop_price,
+        )
+        return qty
+
     def portfolio_at_risk(self, positions: list) -> float:
         """
         Rough estimate of total portfolio risk (sum of unrealised P&L
