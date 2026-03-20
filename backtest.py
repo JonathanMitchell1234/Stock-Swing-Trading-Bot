@@ -39,6 +39,8 @@ import pandas as pd
 import config
 from indicators import compute_all, compute_weekly_trend, realized_volatility
 from strategy import check_entry as strategy_check_entry
+from strategy import check_short_entry as strategy_check_short_entry
+from strategy import check_short_exit as strategy_check_short_exit
 from logger import get_logger
 
 
@@ -99,6 +101,7 @@ class ClosedTrade:
     pnl_pct: float
     hold_days: int
     exit_reason: str
+    side: str = "long"  # "long" or "short"
 
 @dataclass
 class Position:
@@ -112,6 +115,19 @@ class Position:
 
     def __post_init__(self):
         self.highest_price = self.entry_price
+
+@dataclass
+class ShortPosition:
+    symbol: str
+    entry_date: dt.date
+    entry_price: float
+    qty: float
+    stop_loss: float
+    take_profit: float
+    lowest_price: float = 0.0   # for trailing stop tracking
+
+    def __post_init__(self):
+        self.lowest_price = self.entry_price
 
 
 # ═════════════════════════════════════════════════════════════
@@ -141,6 +157,7 @@ class Backtester:
         # Portfolio state
         self.cash = initial_capital
         self.positions: Dict[str, Position] = {}
+        self.short_positions: Dict[str, ShortPosition] = {}
         self.equity_curve: List[Tuple[dt.date, float]] = []
         self.trade_log: List[ClosedTrade] = []
         self.all_trades: List[Trade] = []  # every buy/sell
@@ -281,6 +298,12 @@ class Backtester:
             price = self._get_close(pos.symbol, date)
             if price:
                 value += price * pos.qty
+        for pos in self.short_positions.values():
+            price = self._get_close(pos.symbol, date)
+            if price:
+                # Cash already includes short sale proceeds (entry_price * qty).
+                # Subtract current cover cost to get true equity.
+                value -= price * pos.qty
         return value
 
     def _get_close(self, symbol: str, date: dt.date) -> Optional[float]:
@@ -345,19 +368,55 @@ class Backtester:
             return max(0.0, round(qty_raw, 3))
         return max(0, math.floor(qty_raw))
 
+    def _size_short_position(self, entry_price: float, stop_price: float, date: dt.date) -> float:
+        """Position sizing for SHORT trades (stop is ABOVE entry)."""
+        equity = self._portfolio_value(date)
+        if entry_price <= 0 or stop_price <= 0 or stop_price <= entry_price:
+            return 0
+
+        risk_per_share = stop_price - entry_price
+        if risk_per_share <= 0:
+            return 0
+
+        risk_pct = config.get_risk_per_trade(equity)
+        pos_pct = config.get_position_pct(equity)
+
+        max_risk = equity * risk_pct
+        shares_by_risk = max_risk / risk_per_share
+
+        max_pos_value = equity * pos_pct
+        shares_by_value = max_pos_value / entry_price
+
+        shares_by_cash = self.cash * 0.95 / entry_price
+
+        qty_raw = min(shares_by_risk, shares_by_value, shares_by_cash)
+
+        # Apply bear-mode size scale (shorts are riskier)
+        bear_scale = getattr(config, 'BEAR_SHORT_SIZE_SCALE', 0.6)
+        qty_raw *= bear_scale
+
+        if config.FRACTIONAL_SHARES:
+            return max(0.0, round(qty_raw, 3))
+        return max(0, math.floor(qty_raw))
+
     # ── market regime check ──────────────────────────────────
     def _is_bull_market(self, date: dt.date) -> bool:
-        """Check if SPY is above its 200-day SMA (classic bull/bear definition)."""
+        """Check if SPY is above its EMA-200 (matches executor.py regime detection)."""
         if not config.MARKET_REGIME_ENABLED or self._regime_data is None:
             return True  # default: allow trades
         mask = self._regime_data.index.date <= date
         if not mask.any():
             return True
         row = self._regime_data.loc[mask].iloc[-1]
+        # Primary: use EMA-200 (matches executor._detect_regime)
+        ema_200 = row.get("ema_200", None)
+        if ema_200 is not None and not pd.isna(ema_200):
+            return row["close"] > ema_200
+        # Fallback: use SMA-200 if EMA unavailable
         sma_200 = row.get("sma_200", None)
-        if sma_200 is None or pd.isna(sma_200):
-            return True
-        return row["close"] > sma_200
+        if sma_200 is not None and not pd.isna(sma_200):
+            return row["close"] > sma_200
+        return True
 
     # ── VIX fear-level helper ────────────────────────────────
     def _vix_size_scale(self, date: dt.date) -> float:
@@ -755,6 +814,8 @@ class Backtester:
         final_date = trading_dates[-1]
         for symbol in list(self.positions.keys()):
             self._close_position(symbol, final_date, "Backtest end")
+        for symbol in list(self.short_positions.keys()):
+            self._close_short_position(symbol, final_date, "Backtest end")
 
         stats = self._compute_stats(trading_dates)
         self._print_report(stats)
@@ -812,6 +873,54 @@ class Backtester:
                 if trail_price > pos.stop_loss:
                     pos.stop_loss = trail_price
 
+        # 1b. Check stop-loss and take-profit on SHORT positions
+        for symbol in list(self.short_positions.keys()):
+            pos = self.short_positions[symbol]
+            row = self._get_row(symbol, date)
+            if row is None:
+                continue
+
+            low = row["low"]
+            high = row["high"]
+
+            # Update trailing low (shorts profit when price drops)
+            pos.lowest_price = min(pos.lowest_price, low)
+
+            # Stop-loss hit? For shorts, stop is ABOVE entry → triggered by HIGH
+            if high >= pos.stop_loss:
+                self._close_short_position(symbol, date, "Stop-loss hit (short)",
+                                           exit_price=pos.stop_loss)
+                continue
+
+            # Take-profit hit? For shorts, TP is BELOW entry → triggered by LOW
+            if low <= pos.take_profit:
+                self._close_short_position(symbol, date, "Take-profit hit (short)",
+                                           exit_price=pos.take_profit)
+                continue
+
+            # Adaptive trailing stop for shorts: tracks lowest price, triggers on rise
+            profit_pct = (pos.entry_price - pos.lowest_price) / pos.entry_price
+            if profit_pct >= config.TRAILING_STOP_TIGHT_ACTIVATE:
+                trail_pct = config.TRAILING_STOP_TIGHT_PCT
+            elif profit_pct >= config.TRAILING_STOP_ACTIVATE_PCT:
+                trail_pct = config.TRAILING_STOP_PCT
+            else:
+                trail_pct = None
+
+            if trail_pct is not None:
+                trail_price = pos.lowest_price * (1 + trail_pct)
+                if high >= trail_price:
+                    self._close_short_position(
+                        symbol, date,
+                        f"Trailing stop short ({trail_pct*100:.1f}% from ${pos.lowest_price:.2f})",
+                        exit_price=trail_price,
+                    )
+                    continue
+
+                # Ratchet DOWN the hard stop to trailing level (never raise it for shorts)
+                if trail_price < pos.stop_loss:
+                    pos.stop_loss = trail_price
+
         # 2. Check indicator-based exits (PDT: must have held >= MIN_HOLD days)
         for symbol in list(self.positions.keys()):
             pos = self.positions[symbol]
@@ -828,6 +937,25 @@ class Backtester:
             if reasons:
                 self._close_position(symbol, date, "; ".join(reasons))
 
+        # 2b. Check indicator-based exits for SHORT positions
+        for symbol in list(self.short_positions.keys()):
+            pos = self.short_positions[symbol]
+            hold_days = (date - pos.entry_date).days
+            if hold_days < config.MIN_HOLD_CALENDAR_DAYS:
+                continue
+
+            df = self._get_df_up_to(symbol, date)
+            if df is None:
+                continue
+
+            signal = strategy_check_short_exit(
+                df, entry_price=pos.entry_price,
+                hold_days=hold_days, explain=True,
+            )
+            if signal and signal.get("should_exit"):
+                reasons = signal.get("reasons", ["Short exit signal"])
+                self._close_short_position(symbol, date, "; ".join(reasons))
+
         # 3. Scan for new entries (respect market regime + momentum ranking + v4 filters)
         bull_market = self._is_bull_market(date)
         equity = self._portfolio_value(date)
@@ -839,24 +967,62 @@ class Backtester:
         dyn_threshold = self._dynamic_score_threshold(date)
 
         # VIX halt: if VIXY is in panic territory, block new LONG entries only.
-        # Inverse ETF entries are still allowed — panic = ideal short entry.
+        # Short entries and inverse ETF entries are still allowed.
         long_halted = (vix_scale == 0.0)
-        if long_halted and not config.INVERSE_ETF_MODE_ENABLED:
+        bear_short_enabled = getattr(config, 'BEAR_SHORT_MODE_ENABLED', False)
+        short_min_equity = getattr(config, 'SHORT_MIN_EQUITY', 2000.0)
+        has_inverse_watchlist = bool(config.INVERSE_WATCHLIST)
+
+        if long_halted and not has_inverse_watchlist and not bear_short_enabled:
             equity = self._portfolio_value(date)
             self.equity_curve.append((date, equity))
             return
 
-        # Determine which symbol pool to scan based on market regime
-        # Bear market OR VIX halt → switch to inverse ETFs
-        bear_mode = (not bull_market and config.INVERSE_ETF_MODE_ENABLED) or \
-                    (long_halted and config.INVERSE_ETF_MODE_ENABLED)
-        if bear_mode:
+        # Determine which mode to use based on market regime + equity
+        # In bear regime:
+        #   - If equity >= SHORT_MIN_EQUITY → short-sell (original behavior)
+        #   - If equity <  SHORT_MIN_EQUITY → buy inverse ETFs (no margin needed)
+        # The INVERSE_ETF_MODE_ENABLED static flag is now dynamically overridden
+        # by the equity check, but still respected if explicitly set.
+        bear_regime = not bull_market or long_halted
+
+        if bear_regime and bear_short_enabled and equity >= short_min_equity:
+            # Enough equity to short-sell
+            inverse_mode = False
+            short_mode = True
+        elif bear_regime and has_inverse_watchlist:
+            # Not enough equity (or shorts disabled) → use inverse ETFs
+            inverse_mode = True
+            short_mode = False
+            if equity < short_min_equity:
+                log.debug(
+                    "Bear mode on %s — equity $%.2f < $%.2f short minimum — "
+                    "using INVERSE ETF mode instead of shorting",
+                    date, equity, short_min_equity,
+                )
+        elif bear_regime and bear_short_enabled:
+            # Shorts enabled but no inverse watchlist and equity check passes above
+            inverse_mode = False
+            short_mode = True
+        else:
+            inverse_mode = False
+            short_mode = False
+
+        if inverse_mode:
             # Bear market: trade inverse ETFs only (no longs on regular stocks)
             scan_symbols = [s for s in config.INVERSE_WATCHLIST if s in self._data]
-            # Apply extra size reduction for inverse ETF volatility
             vol_scale = vol_scale * config.INVERSE_ETF_SIZE_SCALE
             log.debug("Bear mode on %s (bull=%s, vix_halt=%s) — scanning inverse ETFs: %s",
                       date, bull_market, long_halted, scan_symbols)
+        elif short_mode:
+            # Bear market with short-selling: scan normal watchlist for shorts
+            short_blacklist = getattr(config, 'SHORT_BLACKLIST', [])
+            scan_symbols = [
+                s for s in self.symbols
+                if s not in config.INVERSE_WATCHLIST and s not in short_blacklist
+            ]
+            log.debug("Bear SHORT mode on %s (bull=%s, vix_halt=%s) — scanning %d symbols for shorts",
+                      date, bull_market, long_halted, len(scan_symbols))
         else:
             # Bull market: trade the normal watchlist (exclude inverse ETFs)
             scan_symbols = [
@@ -866,11 +1032,13 @@ class Backtester:
             # Apply VIX reduce-scale to longs if elevated fear
             vix_scale = vix_scale  # already computed above (0.5 or 1.0)
 
-        if len(self.positions) < max_positions and (bull_market or bear_mode):
+        total_positions = len(self.positions) + len(self.short_positions)
+        can_enter = bull_market or inverse_mode or short_mode
+        if total_positions < max_positions and can_enter:
             # Phase 1: Gather candidates with momentum scores
             candidates = []
             for symbol in scan_symbols:
-                if symbol in self.positions:
+                if symbol in self.positions or symbol in self.short_positions:
                     continue
 
                 # Sector exposure limit
@@ -909,13 +1077,17 @@ class Backtester:
                 return
 
             # Phase 2: Rank by momentum, keep top half
-            candidates.sort(key=lambda x: x[2], reverse=True)
+            # For shorts: rank by WEAKEST momentum (most bearish)
+            if short_mode:
+                candidates.sort(key=lambda x: x[2], reverse=False)
+            else:
+                candidates.sort(key=lambda x: x[2], reverse=True)
             cutoff = max(1, int(len(candidates) * config.MOMENTUM_TOP_PCT))
             top_candidates = candidates[:cutoff]
 
             # Phase 3: Score and enter the best (with v4 advanced filters)
             for symbol, df, mom in top_candidates:
-                if len(self.positions) >= max_positions:
+                if len(self.positions) + len(self.short_positions) >= max_positions:
                     break
 
                 # Sector re-check (may have filled during this loop)
@@ -923,86 +1095,150 @@ class Backtester:
                     continue
 
                 # Multi-timeframe: weekly trend check (hard filter)
-                # Skip weekly filter for inverse ETFs — they move opposite to market
+                # Skip weekly filter for inverse ETFs and short entries
                 weekly_bull = self._is_weekly_bullish(symbol, date)
                 is_inverse = symbol in config.INVERSE_WATCHLIST
-                if config.WEEKLY_TREND_ENABLED and not weekly_bull and not is_inverse:
-                    continue  # skip entry when weekly trend disagrees
+                if config.WEEKLY_TREND_ENABLED and not weekly_bull and not is_inverse and not short_mode:
+                    continue  # skip long entry when weekly trend disagrees
 
-                signal = self._check_entry(
-                    df, momentum=mom, weekly_bullish=weekly_bull,
-                    score_threshold=dyn_threshold,
-                    inverse_mode=is_inverse,
-                )
-                if signal is None:
-                    continue
+                # ── Route to short entry or long entry ──────
+                if short_mode:
+                    # SHORT ENTRY path
+                    spy_slice = None
+                    vixy_slice = None
+                    if self._regime_data is not None and not self._regime_data.empty:
+                        spy_mask = self._regime_data.index.date <= date
+                        if spy_mask.any():
+                            spy_slice = self._regime_data.loc[spy_mask]
+                    if self._vix_data is not None and not self._vix_data.empty:
+                        vixy_mask = self._vix_data.index.date <= date
+                        if vixy_mask.any():
+                            vixy_slice = self._vix_data.loc[vixy_mask]
 
-                # ── NLP Sentiment Check (Backtest) ──────────
-                if getattr(config, "NLP_SENTIMENT_ENABLED", False):
-                    import sentiment
-                    from broker import AlpacaBroker
-                    
-                    if not hasattr(self, "_alpaca_broker"):
-                        self._alpaca_broker = AlpacaBroker()
-                    if not hasattr(self, "_sentiment_cache"):
-                        self._sentiment_cache = {}
-                        
-                    # Request historical news strictly up to this trading date
-                    end_str = date.strftime("%Y-%m-%dT23:59:59Z")
-                    cache_key = f"{symbol}_{end_str}"
-                    
-                    if cache_key not in self._sentiment_cache:
-                        news_limit = getattr(config, "NLP_NEWS_LIMIT_PER_SYMBOL", 10)
-                        headlines = self._alpaca_broker.get_news(symbol, limit=news_limit, end=end_str)
-                        sentiment_score = sentiment.get_sentiment(headlines)
-                        self._sentiment_cache[cache_key] = sentiment_score
-                        log.info("BACKTEST NLP %s on %s: Score = %.2f", symbol, date, sentiment_score)
-                    
-                    sentiment_score = self._sentiment_cache[cache_key]
-                    min_sentiment = getattr(config, "NLP_MIN_SENTIMENT", -0.20)
-                    
-                    if sentiment_score < min_sentiment:
-                        log.debug(
-                            "BACKTEST SKIP %s on %s – Negative news sentiment (%.2f < %.2f)",
-                            symbol, date, sentiment_score, min_sentiment
-                        )
+                    signal = strategy_check_short_entry(
+                        df, weekly_bullish=weekly_bull,
+                        spy_df=spy_slice, vixy_df=vixy_slice,
+                    )
+                    if signal is None:
                         continue
 
-                entry_price = self._apply_slippage(signal["price"], "BUY")
-                atr = signal["atr"]
-                stop_loss = round(entry_price - atr * atr_stop_mult, 2)
-                take_profit = round(entry_price + atr * atr_profit_mult, 2)
+                    if signal.get("score", 0) < dyn_threshold:
+                        continue
 
-                qty = self._size_position(entry_price, stop_loss, date)
+                    entry_price = self._apply_slippage(signal["price"], "SELL")
+                    atr = signal["atr"]
+                    # For shorts: stop is ABOVE entry, target is BELOW entry
+                    stop_loss = round(entry_price + atr * atr_stop_mult, 2)
+                    take_profit = round(entry_price - atr * atr_profit_mult, 2)
 
-                # Apply combined scale: volatility regime + VIX fear filter
-                combined_scale = vol_scale * vix_scale
-                if combined_scale != 1.0:
-                    qty = round(qty * combined_scale, 3) if config.FRACTIONAL_SHARES else math.floor(qty * combined_scale)
+                    qty = self._size_short_position(entry_price, stop_loss, date)
 
-                if qty <= 0:
-                    continue
+                    # Apply combined scale: volatility regime + VIX
+                    combined_scale = vol_scale * (vix_scale if vix_scale > 0 else 1.0)
+                    if combined_scale != 1.0:
+                        qty = round(qty * combined_scale, 3) if config.FRACTIONAL_SHARES else math.floor(qty * combined_scale)
 
-                cost = entry_price * qty
-                if cost > self.cash:
-                    continue
+                    if qty <= 0:
+                        continue
 
-                # Execute buy
-                self.cash -= cost
-                self.positions[symbol] = Position(
-                    symbol=symbol,
-                    entry_date=date,
-                    entry_price=entry_price,
-                    qty=qty,
-                    stop_loss=stop_loss,
-                    take_profit=take_profit,
-                )
-                self.all_trades.append(Trade(
-                    symbol=symbol, side="BUY", date=date, price=entry_price,
-                    qty=qty, stop_loss=stop_loss, take_profit=take_profit,
-                    reason=signal["reason"],
-                ))
-                self._sector_add(symbol)
+                    cost = entry_price * qty
+                    if cost > self.cash:
+                        continue
+
+                    # Execute short sell (receive cash proceeds)
+                    self.cash += cost  # short sale proceeds credited
+                    self.short_positions[symbol] = ShortPosition(
+                        symbol=symbol,
+                        entry_date=date,
+                        entry_price=entry_price,
+                        qty=qty,
+                        stop_loss=stop_loss,
+                        take_profit=take_profit,
+                    )
+                    self.all_trades.append(Trade(
+                        symbol=symbol, side="SELL", date=date, price=entry_price,
+                        qty=qty, stop_loss=stop_loss, take_profit=take_profit,
+                        reason=signal.get("reason", "SHORT entry"),
+                    ))
+                    self._sector_add(symbol)
+                    log.debug("SHORT ENTRY %s on %s  qty=%.3f  price=%.2f  SL=%.2f  TP=%.2f  [%s]",
+                              symbol, date, qty, entry_price, stop_loss, take_profit,
+                              signal.get("reason", ""))
+                else:
+                    # LONG ENTRY path (bull market or inverse ETF)
+                    signal = self._check_entry(
+                        df, momentum=mom, weekly_bullish=weekly_bull,
+                        score_threshold=dyn_threshold,
+                        inverse_mode=is_inverse,
+                    )
+                    if signal is None:
+                        continue
+
+                    # ── NLP Sentiment Check (Backtest) ──────────
+                    if getattr(config, "NLP_SENTIMENT_ENABLED", False):
+                        import sentiment
+                        from broker import AlpacaBroker
+                        
+                        if not hasattr(self, "_alpaca_broker"):
+                            self._alpaca_broker = AlpacaBroker()
+                        if not hasattr(self, "_sentiment_cache"):
+                            self._sentiment_cache = {}
+                            
+                        end_str = date.strftime("%Y-%m-%dT23:59:59Z")
+                        cache_key = f"{symbol}_{end_str}"
+                        
+                        if cache_key not in self._sentiment_cache:
+                            news_limit = getattr(config, "NLP_NEWS_LIMIT_PER_SYMBOL", 10)
+                            headlines = self._alpaca_broker.get_news(symbol, limit=news_limit, end=end_str)
+                            sentiment_score = sentiment.get_sentiment(headlines)
+                            self._sentiment_cache[cache_key] = sentiment_score
+                            log.info("BACKTEST NLP %s on %s: Score = %.2f", symbol, date, sentiment_score)
+                        
+                        sentiment_score = self._sentiment_cache[cache_key]
+                        min_sentiment = getattr(config, "NLP_MIN_SENTIMENT", -0.20)
+                        
+                        if sentiment_score < min_sentiment:
+                            log.debug(
+                                "BACKTEST SKIP %s on %s – Negative news sentiment (%.2f < %.2f)",
+                                symbol, date, sentiment_score, min_sentiment
+                            )
+                            continue
+
+                    entry_price = self._apply_slippage(signal["price"], "BUY")
+                    atr = signal["atr"]
+                    stop_loss = round(entry_price - atr * atr_stop_mult, 2)
+                    take_profit = round(entry_price + atr * atr_profit_mult, 2)
+
+                    qty = self._size_position(entry_price, stop_loss, date)
+
+                    # Apply combined scale: volatility regime + VIX fear filter
+                    combined_scale = vol_scale * vix_scale
+                    if combined_scale != 1.0:
+                        qty = round(qty * combined_scale, 3) if config.FRACTIONAL_SHARES else math.floor(qty * combined_scale)
+
+                    if qty <= 0:
+                        continue
+
+                    cost = entry_price * qty
+                    if cost > self.cash:
+                        continue
+
+                    # Execute buy
+                    self.cash -= cost
+                    self.positions[symbol] = Position(
+                        symbol=symbol,
+                        entry_date=date,
+                        entry_price=entry_price,
+                        qty=qty,
+                        stop_loss=stop_loss,
+                        take_profit=take_profit,
+                    )
+                    self.all_trades.append(Trade(
+                        symbol=symbol, side="BUY", date=date, price=entry_price,
+                        qty=qty, stop_loss=stop_loss, take_profit=take_profit,
+                        reason=signal["reason"],
+                    ))
+                    self._sector_add(symbol)
 
         # Record equity at end of day
         equity = self._portfolio_value(date)
@@ -1049,6 +1285,54 @@ class Backtester:
         ))
         self.all_trades.append(Trade(
             symbol=symbol, side="SELL", date=date, price=exit_price,
+            qty=pos.qty, reason=reason,
+        ))
+
+    def _close_short_position(
+        self,
+        symbol: str,
+        date: dt.date,
+        reason: str,
+        exit_price: Optional[float] = None,
+    ) -> None:
+        pos = self.short_positions.pop(symbol, None)
+        if pos is None:
+            return
+
+        if exit_price is None:
+            exit_price = self._get_close(symbol, date) or pos.entry_price
+        exit_price = self._apply_slippage(exit_price, "BUY")
+
+        pnl = (pos.entry_price - exit_price) * pos.qty
+        pnl_pct = (pos.entry_price - exit_price) / pos.entry_price
+        hold_days = (date - pos.entry_date).days
+
+        # Buy-to-cover: debit the cover cost from cash.
+        # (Short sale proceeds were credited at entry: +entry_price*qty)
+        # Net effect on cash: entry_price*qty - exit_price*qty = pnl
+        self.cash -= exit_price * pos.qty
+
+        # Track sector removal
+        self._sector_remove(symbol)
+
+        # Record cooldown so we don't re-enter this symbol too soon
+        self._cooldowns[symbol] = date
+
+        self.trade_log.append(ClosedTrade(
+            symbol=symbol,
+            entry_date=pos.entry_date,
+            exit_date=date,
+            entry_price=pos.entry_price,
+            exit_price=exit_price,
+            qty=pos.qty,
+            pnl=pnl,
+            pnl_pct=pnl_pct,
+            hold_days=hold_days,
+            exit_reason=reason,
+            side="short",
+        ))
+        self.all_trades.append(Trade(
+            symbol=symbol, side="BUY", date=date, price=exit_price,
             qty=pos.qty, reason=reason,
         ))
 
@@ -1115,6 +1399,8 @@ class Backtester:
             "avg_hold_days": avg_hold,
             "max_consecutive_wins": self._max_consecutive(True),
             "max_consecutive_losses": self._max_consecutive(False),
+            "long_trades": len([t for t in self.trade_log if getattr(t, 'side', 'long') == 'long']),
+            "short_trades": len([t for t in self.trade_log if getattr(t, 'side', 'long') == 'short']),
         }
 
     def _max_consecutive(self, winning: bool) -> int:
@@ -1152,6 +1438,8 @@ class Backtester:
         print(f"  Profit factor   :  {stats['profit_factor']:>10.2f}")
         print("-" * 68)
         print(f"  Total trades    :  {stats['total_trades']:>10d}")
+        print(f"    Long trades   :  {stats.get('long_trades', stats['total_trades']):>10d}")
+        print(f"    Short trades  :  {stats.get('short_trades', 0):>10d}")
         print(f"  Winners         :  {stats['winners']:>10d}")
         print(f"  Losers          :  {stats['losers']:>10d}")
         print(f"  Win rate        :  {stats['win_rate_pct']:>10.1f}%")
@@ -1165,12 +1453,13 @@ class Backtester:
         # Trade log
         if self.trade_log:
             print("\n  TRADE LOG (last 30)")
-            print(f"  {'Symbol':<7} {'Entry':>10} {'Exit':>10} {'Entry$':>9} {'Exit$':>9}"
+            print(f"  {'Symbol':<7} {'Side':<6} {'Entry':>10} {'Exit':>10} {'Entry$':>9} {'Exit$':>9}"
                   f" {'P&L':>9} {'P&L%':>7} {'Days':>5} {'Reason'}")
-            print("  " + "-" * 90)
+            print("  " + "-" * 100)
             for t in self.trade_log[-30:]:
+                side_str = getattr(t, 'side', 'long').upper()
                 print(
-                    f"  {t.symbol:<7} {str(t.entry_date):>10} {str(t.exit_date):>10}"
+                    f"  {t.symbol:<7} {side_str:<6} {str(t.entry_date):>10} {str(t.exit_date):>10}"
                     f" {t.entry_price:>9.2f} {t.exit_price:>9.2f}"
                     f" {t.pnl:>+9.2f} {t.pnl_pct * 100:>+6.2f}%"
                     f" {t.hold_days:>5d}  {t.exit_reason}"

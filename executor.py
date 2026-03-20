@@ -401,17 +401,30 @@ class TradeExecutor:
         # ── Market regime detection ──────────────────────────
         bear_market, spy_df = self._detect_regime()
 
-        # In bear mode, decide action based on config
+        # In bear mode, decide action based on equity and config
+        use_inverse_etfs = False
         if bear_market:
-            if config.BEAR_SHORT_MODE_ENABLED:
+            equity = self.broker.get_equity()
+            short_min_equity = getattr(config, "SHORT_MIN_EQUITY", 2000.0)
+
+            if equity >= short_min_equity and config.BEAR_SHORT_MODE_ENABLED:
                 log.info(
-                    "BEAR MARKET — short-selling mode active. "
-                    "Will scan watchlist for short entries."
+                    "BEAR MARKET — equity $%.2f >= $%.2f — "
+                    "short-selling mode active. Will scan watchlist for short entries.",
+                    equity, short_min_equity,
+                )
+            elif config.INVERSE_WATCHLIST:
+                use_inverse_etfs = True
+                log.info(
+                    "BEAR MARKET — equity $%.2f < $%.2f (short-sell minimum) — "
+                    "switching to INVERSE ETF mode. Will buy inverse ETFs instead of shorting.",
+                    equity, short_min_equity,
                 )
             else:
                 log.info(
-                    "BEAR MARKET detected but short-selling disabled "
-                    "(BEAR_SHORT_MODE_ENABLED=False) — skipping all entries."
+                    "BEAR MARKET — equity $%.2f < $%.2f and no INVERSE_WATCHLIST configured "
+                    "— skipping all entries (cannot short or buy inverse ETFs).",
+                    equity, short_min_equity,
                 )
                 return 0
 
@@ -482,7 +495,9 @@ class TradeExecutor:
                 )
                 return 0
 
-        candidates = self.screener.screen()
+        candidates = self.screener.screen(
+            symbols=config.INVERSE_WATCHLIST if use_inverse_etfs else None
+        )
         opened = 0
 
         for c in candidates:
@@ -498,7 +513,7 @@ class TradeExecutor:
 
             # In bull mode: skip if symbol is in SHORT_BLACKLIST (irrelevant)
             # In bear mode: skip if symbol is in SHORT_BLACKLIST
-            if bear_market and symbol in config.SHORT_BLACKLIST:
+            if bear_market and not use_inverse_etfs and symbol in config.SHORT_BLACKLIST:
                 log.info("SKIP %s – on SHORT_BLACKLIST (not shortable)", symbol)
                 continue
 
@@ -521,8 +536,13 @@ class TradeExecutor:
                 except Exception:
                     pass
 
-            # ── Route to bull (long) or bear (short) entry logic ──
-            if bear_market:
+            # ── Route to bull (long) or bear (short / inverse ETF) entry logic ──
+            if bear_market and use_inverse_etfs:
+                opened += self._try_inverse_etf_entry(
+                    c, weekly_bull, spy_df, vixy_df,
+                    dyn_threshold, vol_scale, vix_size_scale, sector,
+                )
+            elif bear_market:
                 opened += self._try_short_entry(
                     c, weekly_bull, spy_df, vixy_df,
                     dyn_threshold, vol_scale, vix_size_scale, sector,
@@ -533,7 +553,12 @@ class TradeExecutor:
                     dyn_threshold, vol_scale, vix_size_scale, sector,
                 )
 
-        mode_str = "SHORT" if bear_market else "LONG"
+        if use_inverse_etfs:
+            mode_str = "INVERSE_ETF"
+        elif bear_market:
+            mode_str = "SHORT"
+        else:
+            mode_str = "LONG"
         log.info("Entry scan complete (%s mode) - opened %d position(s)", mode_str, opened)
         return opened
 
@@ -601,6 +626,90 @@ class TradeExecutor:
             return 1
         except Exception as exc:
             log.error("Buy order failed for %s: %s", symbol, exc)
+            return 0
+
+    # ─────────────────────────────────────────────────────────
+    # INVERSE ETF ENTRY (bear mode, equity < SHORT_MIN_EQUITY)
+    # ─────────────────────────────────────────────────────────
+    def _try_inverse_etf_entry(self, c: dict, weekly_bull: bool,
+                                spy_df, vixy_df,
+                                dyn_threshold: int, vol_scale: float,
+                                vix_size_scale: float, sector: str) -> int:
+        """
+        Evaluate and submit a LONG buy on an inverse ETF as a bear-market
+        alternative to short-selling (used when equity < SHORT_MIN_EQUITY).
+
+        Inverse ETFs naturally rise when the market falls, so we use the
+        standard long-entry scoring logic — the ETF's own technicals
+        (RSI, MACD, EMAs) will reflect the bullish trend *of the ETF*
+        which corresponds to a bearish move in the underlying index.
+
+        Returns 1 if opened, 0 otherwise.
+        """
+        symbol = c["symbol"]
+
+        # Use standard long entry scoring on the inverse ETF's own chart
+        signal = check_entry(c["df"], weekly_bullish=weekly_bull,
+                            spy_df=spy_df, vixy_df=vixy_df)
+        if signal is None:
+            return 0
+
+        if signal["score"] < dyn_threshold:
+            return 0
+
+        entry_price = signal["price"]
+        atr = signal["atr"]
+        stop_loss = self.risk.compute_stop_loss(entry_price, atr)
+        take_profit = self.risk.compute_take_profit(entry_price, atr)
+
+        qty = self.risk.calculate_position_size(
+            entry_price=entry_price,
+            stop_price=stop_loss,
+            buying_power=self.broker.get_buying_power(),
+        )
+
+        # Apply inverse-ETF size scaling (same risk profile as shorts)
+        inverse_scale = getattr(config, "INVERSE_ETF_SIZE_SCALE", 0.60)
+        if inverse_scale != 1.0 and qty > 0:
+            qty = round(qty * inverse_scale, 3) if config.FRACTIONAL_SHARES else int(qty * inverse_scale)
+            log.info("Inverse ETF size scale: %.2f -> qty adjusted to %.3f",
+                     inverse_scale, qty)
+
+        # Apply volatility regime scaling
+        if vol_scale != 1.0 and qty > 0:
+            qty = round(qty * vol_scale, 3) if config.FRACTIONAL_SHARES else int(qty * vol_scale)
+            log.info("Vol regime scale: %.2f -> qty adjusted to %.3f", vol_scale, qty)
+
+        # Apply VIX sizing (elevated VIX helps inverse ETFs, but still respect scaling)
+        if vix_size_scale != 1.0 and qty > 0:
+            qty = round(qty * vix_size_scale, 3) if config.FRACTIONAL_SHARES else int(qty * vix_size_scale)
+            log.info("VIX size scale: %.2f -> qty adjusted to %.3f", vix_size_scale, qty)
+
+        if qty == 0:
+            log.info("Position size = 0 for inverse ETF %s - skipping", symbol)
+            return 0
+
+        MIN_ORDER_NOTIONAL = 1.0
+        if qty * entry_price < MIN_ORDER_NOTIONAL:
+            log.info("Skipping inverse ETF %s – order value $%.2f below minimum $%.2f",
+                     symbol, qty * entry_price, MIN_ORDER_NOTIONAL)
+            return 0
+
+        log.info(
+            "ENTRY INVERSE-ETF (LONG) %s  qty=%.3f  price=%.2f  SL=%.2f  TP=%.2f  [%s]",
+            symbol, qty, entry_price, stop_loss, take_profit, signal["reason"],
+        )
+
+        try:
+            self.broker.submit_market_buy(
+                symbol, qty, stop_loss=stop_loss, take_profit=take_profit
+            )
+            self.pdt.record_buy(symbol)
+            self.risk.open_positions += 1
+            self._sector_counts[sector] = self._sector_counts.get(sector, 0) + 1
+            return 1
+        except Exception as exc:
+            log.error("Inverse ETF buy order failed for %s: %s", symbol, exc)
             return 0
 
     # ─────────────────────────────────────────────────────────

@@ -140,10 +140,28 @@ SHORT_BLACKLIST = [
     "MARA", "RIVN",  # volatile / hard-to-borrow
 ]
 
-# Legacy — kept for config_overrides.json compatibility
-INVERSE_ETF_MODE_ENABLED = False
+# Minimum account equity required to short-sell (Alpaca margin requirement).
+# If equity is below this threshold in a bear regime, the bot automatically
+# switches to buying inverse ETFs from INVERSE_WATCHLIST instead of shorting.
+SHORT_MIN_EQUITY = 2_000.0
+
+# ── Inverse ETF mode (auto-activated when equity < SHORT_MIN_EQUITY) ──
+# When enabled the bot buys inverse/leveraged-inverse ETFs in bear markets
+# instead of short-selling, which requires no margin.
+INVERSE_ETF_MODE_ENABLED = False   # static default; overridden at runtime by equity check
 INVERSE_ETF_SIZE_SCALE = 0.60
-INVERSE_WATCHLIST = []
+INVERSE_WATCHLIST = [
+    "SH",     # ProShares Short S&P 500
+    "SDS",    # ProShares UltraShort S&P 500 (2×)
+    "SPXU",   # ProShares UltraPro Short S&P 500 (3×)
+    "PSQ",    # ProShares Short QQQ
+    "QID",    # ProShares UltraShort QQQ (2×)
+    "SQQQ",   # ProShares UltraPro Short QQQ (3×)
+    "RWM",    # ProShares Short Russell 2000
+    "SDOW",   # ProShares UltraPro Short Dow30 (3×)
+    "SPXS",   # Direxion Daily S&P 500 Bear 3×
+    "SOXS",   # Direxion Daily Semiconductor Bear 3×
+]
 
 # ── Sector exposure limits ─────────────────────────────────
 MAX_PER_SECTOR = 99             # effectively disabled for testing
@@ -170,6 +188,11 @@ SECTOR_MAP = {
     "XLE": "ETF", "XLK": "ETF", "TQQQ": "ETF", "SOXL": "ETF",
     "ARKK": "ETF", "VTI": "ETF", "VOO": "ETF", "DIA": "ETF",
     "VIXY": "ETF",   # VIX proxy used for the fear filter
+    # Inverse ETFs (bear-mode alternatives to short-selling)
+    "SH": "InverseETF", "SDS": "InverseETF", "SPXU": "InverseETF",
+    "PSQ": "InverseETF", "QID": "InverseETF", "SQQQ": "InverseETF",
+    "RWM": "InverseETF", "SDOW": "InverseETF", "SPXS": "InverseETF",
+    "SOXS": "InverseETF",
 }
 
 # ── Bear-mode entry scoring overrides ─────────────────────
@@ -295,6 +318,14 @@ ML_TRAINING_MONTHS = 24         # months of history to use for training
 ML_RECENCY_WEIGHT_ENABLED = True
 ML_RECENCY_HALFLIFE_DAYS   = 90   # half-life in calendar days
 ML_RECENCY_MIN_WEIGHT      = 0.10  # floor: old bars never drop below this fraction of max weight
+
+# ── Short GBM model (separate model for bear-mode shorts) ───
+# Set ML_SHORT_ENABLED = True after training with: python ml_trainer_short.py
+ML_SHORT_ENABLED = True           # enable the short GBM model in bear mode
+ML_SHORT_ENTRY_THRESHOLD = 0.40   # minimum short GBM probability to enter
+ML_SHORT_MIN_SCORE = 3            # minimum hand-crafted short score before consulting GBM
+ML_SHORT_FORWARD_BARS = 5         # forward bars for short label generation
+ML_SHORT_MIN_DROP_PCT = 0.03      # label = 1 if close ≤ entry × (1 - this)
 
 # ─────────────────────────────────────────────
 # NLP Sentiment (FinBERT)

@@ -281,9 +281,12 @@ async def get_regime():
         row       = spy_df.iloc[-1]
         spy_close = _safe_float(row["close"])
         sma_200   = _safe_float(row.get("sma_200", 0))
+        ema_200   = _safe_float(row.get("ema_200", 0))
         ema_50    = _safe_float(row.get("ema_trend", 0))
-        bull_market  = spy_close > sma_200 if sma_200 > 0 else True
-        sma_pct_diff = ((spy_close - sma_200) / sma_200 * 100) if sma_200 else 0
+        # Use EMA-200 for regime detection (matches executor.py logic)
+        regime_ema = ema_200 if ema_200 > 0 else sma_200
+        bull_market  = spy_close > regime_ema if regime_ema > 0 else True
+        sma_pct_diff = ((spy_close - regime_ema) / regime_ema * 100) if regime_ema else 0
 
         # VIXY level
         vixy_level  = None
@@ -307,6 +310,7 @@ async def get_regime():
             "regime_label":   "BULL" if bull_market else "BEAR",
             "spy_close":      round(spy_close, 2),
             "sma_200":        round(sma_200, 2),
+            "ema_200":        round(ema_200, 2),
             "ema_50":         round(ema_50, 2),
             "sma_pct_diff":   round(sma_pct_diff, 2),
             "vixy_level":     vixy_level,
@@ -315,6 +319,13 @@ async def get_regime():
             "vix_halt_threshold":   config.VIX_HALT_THRESHOLD,
             "vix_reduce_threshold": config.VIX_REDUCE_THRESHOLD,
             "inverse_mode_enabled": config.INVERSE_ETF_MODE_ENABLED,
+            "bear_short_mode_enabled": getattr(config, "BEAR_SHORT_MODE_ENABLED", False),
+            "short_min_equity": getattr(config, "SHORT_MIN_EQUITY", 2000.0),
+            "bear_mode_note": (
+                "Equity < $%.0f: inverse ETFs mode" % getattr(config, "SHORT_MIN_EQUITY", 2000.0)
+                if not bull_market
+                else "Bull market — normal long mode"
+            ),
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

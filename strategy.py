@@ -655,6 +655,18 @@ def _score_short_entry_details(df: pd.DataFrame, weekly_bullish: bool = True) ->
     return details
 
 
+# Lazy import — short ML model is only loaded when bear-mode + ML is enabled
+_ml_model_short = None
+
+def _get_ml_model_short():
+    """Lazy-load the SHORT ML model module."""
+    global _ml_model_short
+    if _ml_model_short is None:
+        import ml_model_short as _m
+        _ml_model_short = _m
+    return _ml_model_short
+
+
 def check_short_entry(df: pd.DataFrame, weekly_bullish: bool = True,
                       spy_df: pd.DataFrame | None = None,
                       vixy_df: pd.DataFrame | None = None,
@@ -663,6 +675,11 @@ def check_short_entry(df: pd.DataFrame, weekly_bullish: bool = True,
     Evaluate the latest bar for SHORT entry quality.
     Mirror of check_entry() but scores bearish weakness.
 
+    When ML_SHORT_ENABLED is True and a trained short GBM model exists:
+      - "gate" mode: hand-crafted short score must pass ML_SHORT_MIN_SCORE AND
+        short GBM probability must be >= ML_SHORT_ENTRY_THRESHOLD
+      - Falls back to hand-crafted threshold when short model is unavailable.
+
     Returns a signal dict if score meets threshold, else None.
     """
     details = _score_short_entry_details(df, weekly_bullish=weekly_bullish)
@@ -670,30 +687,86 @@ def check_short_entry(df: pd.DataFrame, weekly_bullish: bool = True,
     factors = list(details["factors"])
     block_reasons = list(details["block_reasons"])
 
+    diagnostics = {
+        "eligible": False,
+        "score": score,
+        "threshold": config.ENTRY_SCORE_THRESHOLD,
+        "factors": factors,
+        "block_reasons": block_reasons,
+        "ml_prob": None,
+        "price": None,
+        "atr": None,
+        "reason": "",
+        "signal": None,
+    }
+
     if block_reasons:
-        return None
+        diagnostics["reason"] = "; ".join(block_reasons)
+        return diagnostics if explain else None
 
-    # Use same threshold logic as bull entries
-    if config.ML_ENABLED:
-        ml = _get_ml_model()
-        # For shorts, require at least the minimum score gate
-        if config.ML_BLEND_MODE == "gate" and score < config.ML_MIN_SCORE:
-            return None
-        # Note: ML model is trained on long entries — skip ML for shorts
-        # and rely purely on the hand-crafted short scoring system.
-        # When a short-specific model is trained, wire it in here.
+    # ── Short ML-enhanced path ───────────────────────────────
+    ml_short_threshold = getattr(config, "ML_SHORT_ENTRY_THRESHOLD", config.ML_ENTRY_THRESHOLD)
+    ml_short_min_score = getattr(config, "ML_SHORT_MIN_SCORE", config.ML_MIN_SCORE)
+    ml_prob = None
 
-    if score < config.ENTRY_SCORE_THRESHOLD:
-        return None
+    if getattr(config, "ML_SHORT_ENABLED", False):
+        ml_short = _get_ml_model_short()
+
+        # Gate mode: require minimum hand-crafted score first
+        if config.ML_BLEND_MODE == "gate" and score < ml_short_min_score:
+            block_reasons.append(
+                f"Short score {score} below ML gate minimum {ml_short_min_score}"
+            )
+            diagnostics["block_reasons"] = block_reasons
+            diagnostics["reason"] = block_reasons[-1]
+            return diagnostics if explain else None
+
+        # Get short ML prediction
+        if ml_short.is_available():
+            ml_prob = ml_short.predict_short_proba(
+                df, idx=-1, weekly_bullish=weekly_bullish,
+                spy_df=spy_df, vixy_df=vixy_df,
+            )
+
+        if ml_prob is not None:
+            if ml_prob < ml_short_threshold:
+                reason = (
+                    f"Short ML prob {ml_prob:.3f} below threshold {ml_short_threshold:.3f}"
+                )
+                block_reasons.append(reason)
+                diagnostics["block_reasons"] = block_reasons
+                diagnostics["ml_prob"] = ml_prob
+                diagnostics["reason"] = reason
+                return diagnostics if explain else None
+            factors.append(f"Short ML prob={ml_prob:.2f}")
+            diagnostics["ml_prob"] = ml_prob
+        else:
+            # Short model unavailable — fall back to hand-crafted threshold
+            if score < config.ENTRY_SCORE_THRESHOLD:
+                reason = (
+                    f"Short score {score} below threshold {config.ENTRY_SCORE_THRESHOLD} "
+                    f"(short ML unavailable fallback)"
+                )
+                block_reasons.append(reason)
+                diagnostics["block_reasons"] = block_reasons
+                diagnostics["reason"] = reason
+                return diagnostics if explain else None
+    else:
+        # ── No short ML — pure hand-crafted scoring ─────────
+        if score < config.ENTRY_SCORE_THRESHOLD:
+            reason = f"Short score {score} below threshold {config.ENTRY_SCORE_THRESHOLD}"
+            block_reasons.append(reason)
+            diagnostics["block_reasons"] = block_reasons
+            diagnostics["reason"] = reason
+            return diagnostics if explain else None
 
     cur = df.iloc[-1]
     price = cur["close"]
     atr = cur["atr"]
 
     reason = f"SHORT Score {score}: {', '.join(factors)}"
-    log.info("SHORT ENTRY signal: price=%.2f  %s", price, reason)
 
-    return {
+    signal = {
         "action": "SHORT",
         "price": price,
         "atr": atr,
@@ -704,6 +777,23 @@ def check_short_entry(df: pd.DataFrame, weekly_bullish: bool = True,
         "score": score,
         "reason": reason,
     }
+    if ml_prob is not None:
+        signal["ml_prob"] = ml_prob
+
+    diagnostics.update(
+        {
+            "eligible": True,
+            "factors": factors,
+            "price": price,
+            "atr": atr,
+            "reason": reason,
+            "signal": signal,
+        }
+    )
+    if explain:
+        return diagnostics
+    log.info("SHORT ENTRY signal: price=%.2f  %s", price, reason)
+    return signal
 
 
 # ─────────────────────────────────────────────
