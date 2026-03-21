@@ -42,7 +42,7 @@ FEATURE_NAMES: list[str] = [
     "stoch_k_slope_3d",     # stoch_k 3-bar change
     "vol_ratio_slope_3d",   # vol_ratio 3-bar change
     # Volatility
-    "atr_pct",              # atr / close
+    "atr_ratio",            # atr / atr_sma50  (normalised volatility)
     "bb_width",             # (upper-lower) / mid
     "bb_pctb",              # (close-lower) / (upper-lower)
     "rvol_5",               # 5-day realized vol (annualised)
@@ -172,8 +172,13 @@ def extract_row(df: pd.DataFrame, idx: int = -1, weekly_bullish: bool = True,
     vol_ratio_slope_3d = _vel("vol_ratio", 3)
 
     # ── Volatility ───────────────────────────────────────────
-    atr      = _safe(cur.get("atr"))
-    atr_pct  = _safe_div(atr, close)
+    atr = _safe(cur.get("atr"))
+    # Normalised volatility: ATR relative to its own 50-bar mean.
+    # This democratises the watchlist — a blue-chip 2× its normal ATR
+    # looks the same as a tech stock 2× its normal ATR.
+    atr_slice = df["atr"].iloc[max(0, abs_idx - 49):abs_idx + 1]
+    atr_sma50 = float(atr_slice.mean()) if len(atr_slice) >= 10 else float(atr) if atr > 0 else 1.0
+    atr_ratio = _safe_div(atr, atr_sma50, default=1.0)
 
     bb_upper = _safe(cur.get("bb_upper"))
     bb_lower = _safe(cur.get("bb_lower"))
@@ -294,7 +299,7 @@ def extract_row(df: pd.DataFrame, idx: int = -1, weekly_bullish: bool = True,
         adx, stoch_k, stoch_d, stoch_kd,
         rsi_slope_3d, macd_hist_slope_3d, adx_slope_3d,
         stoch_k_slope_3d, vol_ratio_slope_3d,
-        atr_pct, bb_width, bb_pctb, rvol_5, rvol_20,
+        atr_ratio, bb_width, bb_pctb, rvol_5, rvol_20,
         vol_ratio, vol_delta, vol_trend,
         ret_1d, ret_3d, ret_5d, ret_10d, ret_20d,
         ema50_slope, ema200_slope, higher_high, higher_low,
