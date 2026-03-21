@@ -1030,6 +1030,184 @@ async def ml_reload():
 
 
 # ─────────────────────────────────────────────────────────────
+# Short ML model endpoints
+# ─────────────────────────────────────────────────────────────
+
+_ml_short_training = False
+_ml_short_training_status: Optional[str] = None
+
+
+@app.get("/api/ml/short/status")
+async def ml_short_status():
+    import ml_model_short
+    meta = ml_model_short.get_meta()
+    model_loaded = ml_model_short.is_available()
+    # Short model is only operative when equity >= SHORT_MIN_EQUITY
+    short_min_equity = getattr(config, "SHORT_MIN_EQUITY", 2000.0)
+    ml_short_cfg = getattr(config, "ML_SHORT_ENABLED", False)
+    try:
+        equity = _safe_float(_get_api().get_account().equity)
+        effective_short_enabled = ml_short_cfg and equity >= short_min_equity
+    except Exception:
+        effective_short_enabled = ml_short_cfg
+    return {
+        "ml_enabled":      effective_short_enabled,
+        "model_loaded":    model_loaded,
+        "training":        _ml_short_training,
+        "training_status": _ml_short_training_status,
+        "meta":            meta,
+    }
+
+
+class MLShortTrainRequest(BaseModel):
+    months: Optional[int] = None
+    forward_bars: Optional[int] = None
+    min_drop_pct: Optional[float] = None
+    symbols: Optional[List[str]] = None
+
+
+def _ml_short_train_background(req: MLShortTrainRequest) -> None:
+    global _ml_short_training, _ml_short_training_status
+    try:
+        from ml_trainer_short import run_short_training
+        import ml_model_short
+
+        _ml_short_training_status = "Loading data…"
+        meta = run_short_training(
+            symbols=req.symbols,
+            months=req.months or config.ML_TRAINING_MONTHS,
+            forward_bars=req.forward_bars or getattr(config, "ML_SHORT_FORWARD_BARS", 5),
+            min_drop_pct=req.min_drop_pct or getattr(config, "ML_SHORT_MIN_DROP_PCT", 0.03),
+        )
+
+        ml_model_short.reload_model()
+
+        avg = meta.get("avg_metrics", {})
+        _ml_short_training_status = (
+            f"Done — AUC={avg.get('auc', 0):.3f}  "
+            f"F1={avg.get('f1', 0):.3f}  "
+            f"({meta.get('n_samples', 0)} samples)"
+        )
+    except Exception as exc:
+        _ml_short_training_status = f"Error: {exc}"
+        import traceback; traceback.print_exc()
+    finally:
+        _ml_short_training = False
+
+
+@app.post("/api/ml/short/train")
+async def ml_short_train(req: MLShortTrainRequest = MLShortTrainRequest()):
+    global _ml_short_training, _ml_short_training_status
+
+    if _ml_short_training:
+        raise HTTPException(status_code=409, detail="Short model training already in progress")
+
+    _ml_short_training = True
+    _ml_short_training_status = "Starting…"
+
+    t = threading.Thread(target=_ml_short_train_background, args=(req,), daemon=True)
+    t.start()
+
+    return {"ok": True, "message": "Short model training started in background"}
+
+
+@app.post("/api/ml/short/reload")
+async def ml_short_reload():
+    import ml_model_short
+    loaded = ml_model_short.reload_model()
+    return {"ok": True, "model_loaded": loaded}
+
+
+# ─────────────────────────────────────────────────────────────
+# Inverse ETF ML model endpoints
+# ─────────────────────────────────────────────────────────────
+
+_ml_inverse_training = False
+_ml_inverse_training_status: Optional[str] = None
+
+
+@app.get("/api/ml/inverse/status")
+async def ml_inverse_status():
+    import ml_model_inverse
+    meta = ml_model_inverse.get_meta()
+    model_loaded = ml_model_inverse.is_available()
+    # Inverse model is only operative when equity < SHORT_MIN_EQUITY
+    short_min_equity = getattr(config, "SHORT_MIN_EQUITY", 2000.0)
+    ml_inverse_cfg = getattr(config, "ML_INVERSE_ENABLED", False)
+    try:
+        equity = _safe_float(_get_api().get_account().equity)
+        effective_inverse_enabled = ml_inverse_cfg and equity < short_min_equity
+    except Exception:
+        effective_inverse_enabled = ml_inverse_cfg
+    return {
+        "ml_enabled":      effective_inverse_enabled,
+        "model_loaded":    model_loaded,
+        "training":        _ml_inverse_training,
+        "training_status": _ml_inverse_training_status,
+        "meta":            meta,
+    }
+
+
+class MLInverseTrainRequest(BaseModel):
+    months: Optional[int] = None
+    forward_bars: Optional[int] = None
+    min_gain_pct: Optional[float] = None
+    symbols: Optional[List[str]] = None
+
+
+def _ml_inverse_train_background(req: MLInverseTrainRequest) -> None:
+    global _ml_inverse_training, _ml_inverse_training_status
+    try:
+        from ml_trainer_inverse import run_inverse_training
+        import ml_model_inverse
+
+        _ml_inverse_training_status = "Loading data…"
+        meta = run_inverse_training(
+            symbols=req.symbols,
+            months=req.months or config.ML_TRAINING_MONTHS,
+            forward_bars=req.forward_bars or getattr(config, "ML_INVERSE_FORWARD_BARS", 5),
+            min_gain_pct=req.min_gain_pct or getattr(config, "ML_INVERSE_MIN_GAIN_PCT", 0.03),
+        )
+
+        ml_model_inverse.reload_model()
+
+        avg = meta.get("avg_metrics", {})
+        _ml_inverse_training_status = (
+            f"Done — AUC={avg.get('auc', 0):.3f}  "
+            f"F1={avg.get('f1', 0):.3f}  "
+            f"({meta.get('n_samples', 0)} samples)"
+        )
+    except Exception as exc:
+        _ml_inverse_training_status = f"Error: {exc}"
+        import traceback; traceback.print_exc()
+    finally:
+        _ml_inverse_training = False
+
+
+@app.post("/api/ml/inverse/train")
+async def ml_inverse_train(req: MLInverseTrainRequest = MLInverseTrainRequest()):
+    global _ml_inverse_training, _ml_inverse_training_status
+
+    if _ml_inverse_training:
+        raise HTTPException(status_code=409, detail="Inverse model training already in progress")
+
+    _ml_inverse_training = True
+    _ml_inverse_training_status = "Starting…"
+
+    t = threading.Thread(target=_ml_inverse_train_background, args=(req,), daemon=True)
+    t.start()
+
+    return {"ok": True, "message": "Inverse model training started in background"}
+
+
+@app.post("/api/ml/inverse/reload")
+async def ml_inverse_reload():
+    import ml_model_inverse
+    loaded = ml_model_inverse.reload_model()
+    return {"ok": True, "model_loaded": loaded}
+
+
+# ─────────────────────────────────────────────────────────────
 # Bot process management  (start / stop / status)
 # ─────────────────────────────────────────────────────────────
 

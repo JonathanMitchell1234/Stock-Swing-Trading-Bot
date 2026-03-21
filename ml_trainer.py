@@ -531,7 +531,7 @@ def run_training(
     Full training pipeline. Returns the metadata dict.
     Can be called programmatically (from dashboard) or from CLI.
     """
-    symbols = symbols or (list(config.WATCHLIST) + list(config.INVERSE_WATCHLIST))
+    symbols = symbols or list(config.WATCHLIST)
     # Deduplicate preserving order
     seen = set()
     unique_symbols = []

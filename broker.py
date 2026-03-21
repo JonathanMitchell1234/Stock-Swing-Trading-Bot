@@ -491,16 +491,21 @@ class AlpacaBroker:
         """
         Fetch historical bars and return a clean DataFrame.
         Columns: open, high, low, close, volume
+
+        Returns the most recent `limit` bars.
         """
         # The live Alpaca API requires an explicit start date to return
         # historical bars — passing only limit= returns just 1 bar.
-        # Use ~1.5x calendar days to account for weekends/holidays.
-        start_date = (dt.date.today() - dt.timedelta(days=int(limit * 1.5))).isoformat()
+        # Use 2x calendar days to generously account for weekends/holidays.
+        # We intentionally omit the API-level `limit` and instead fetch all
+        # bars in the date range, then keep the last `limit` rows.  The API
+        # truncates from the START when you pass both start+limit, which
+        # silently drops the most recent bars when trading days > limit.
+        start_date = (dt.date.today() - dt.timedelta(days=int(limit * 2))).isoformat()
         bars = self.api.get_bars(
             symbol,
             timeframe,
             start=start_date,
-            limit=limit,
             feed=config.DATA_FEED,
         )
         df = bars.df.copy()
@@ -512,6 +517,9 @@ class AlpacaBroker:
 
         df.index = pd.to_datetime(df.index)
         df = df[["open", "high", "low", "close", "volume"]]
+        # Keep only the most recent `limit` bars
+        if len(df) > limit:
+            df = df.tail(limit)
         return df
 
     def get_latest_price(self, symbol: str) -> float:

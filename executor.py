@@ -15,7 +15,7 @@ from indicators import compute_all, compute_weekly_trend, realized_volatility
 from pdt_guard import PDTGuard
 from risk_manager import RiskManager
 from screener import Screener
-from strategy import check_entry, check_exit, check_short_entry, check_short_exit
+from strategy import check_entry, check_exit, check_short_entry, check_short_exit, check_inverse_entry
 from logger import get_logger
 
 log = get_logger("executor")
@@ -149,6 +149,20 @@ class TradeExecutor:
 
         spy_row = spy_df.iloc[-1]
         spy_close = spy_row["close"]
+
+        # Use live quote price for regime detection so we react to intraday
+        # drops immediately, rather than waiting for the daily bar to close.
+        try:
+            live_price = self.broker.get_latest_price(config.MARKET_REGIME_SYMBOL)
+            if live_price and live_price > 0:
+                log.debug(
+                    "Regime: using live %s price $%.2f (last bar close $%.2f)",
+                    config.MARKET_REGIME_SYMBOL, live_price, spy_close,
+                )
+                spy_close = live_price
+        except Exception as exc:
+            log.debug("Could not fetch live %s price, using bar close: %s",
+                      config.MARKET_REGIME_SYMBOL, exc)
 
         # Primary: use EMA-200 if we have enough bars
         spy_ema200 = spy_row.get("ema_200", None)
@@ -648,9 +662,9 @@ class TradeExecutor:
         """
         symbol = c["symbol"]
 
-        # Use standard long entry scoring on the inverse ETF's own chart
-        signal = check_entry(c["df"], weekly_bullish=weekly_bull,
-                            spy_df=spy_df, vixy_df=vixy_df)
+        # Use the dedicated inverse ETF model for scoring
+        signal = check_inverse_entry(c["df"], weekly_bullish=weekly_bull,
+                                     spy_df=spy_df, vixy_df=vixy_df)
         if signal is None:
             return 0
 

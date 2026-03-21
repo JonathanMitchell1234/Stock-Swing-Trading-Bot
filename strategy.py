@@ -797,6 +797,153 @@ def check_short_entry(df: pd.DataFrame, weekly_bullish: bool = True,
 
 
 # ─────────────────────────────────────────────
+# INVERSE ETF ENTRY (bear mode, equity < SHORT_MIN_EQUITY)
+# ─────────────────────────────────────────────
+
+# Lazy import — inverse ML model is only loaded when inverse ETF mode + ML is enabled
+_ml_model_inverse = None
+
+def _get_ml_model_inverse():
+    """Lazy-load the INVERSE ETF ML model module."""
+    global _ml_model_inverse
+    if _ml_model_inverse is None:
+        import ml_model_inverse as _m
+        _ml_model_inverse = _m
+    return _ml_model_inverse
+
+
+def check_inverse_entry(df: pd.DataFrame, weekly_bullish: bool = True,
+                        spy_df: pd.DataFrame | None = None,
+                        vixy_df: pd.DataFrame | None = None,
+                        explain: bool = False) -> dict | None:
+    """
+    Evaluate the latest bar for INVERSE ETF entry quality.
+
+    Uses the standard long entry scoring (score_entry) because inverse ETFs
+    are bought long — their bullish technicals are the correct signal.
+
+    When ML_INVERSE_ENABLED is True and a trained inverse GBM model exists:
+      - "gate" mode: hand-crafted score must pass ML_INVERSE_MIN_SCORE AND
+        inverse GBM probability must be >= ML_INVERSE_ENTRY_THRESHOLD
+      - Falls back to hand-crafted threshold when inverse model is unavailable.
+
+    Returns a signal dict if score meets threshold, else None.
+    """
+    details = _score_entry_details(df, weekly_bullish=weekly_bullish)
+    score = details["score"]
+    factors = list(details["factors"])
+    block_reasons = list(details["block_reasons"])
+
+    diagnostics = {
+        "eligible": False,
+        "score": score,
+        "threshold": config.ENTRY_SCORE_THRESHOLD,
+        "factors": factors,
+        "block_reasons": block_reasons,
+        "ml_prob": None,
+        "price": None,
+        "atr": None,
+        "reason": "",
+        "signal": None,
+    }
+
+    if block_reasons:
+        diagnostics["reason"] = "; ".join(block_reasons)
+        return diagnostics if explain else None
+
+    # ── Inverse ML-enhanced path ─────────────────────────────
+    ml_inv_threshold = getattr(config, "ML_INVERSE_ENTRY_THRESHOLD", config.ML_ENTRY_THRESHOLD)
+    ml_inv_min_score = getattr(config, "ML_INVERSE_MIN_SCORE", config.ML_MIN_SCORE)
+    ml_prob = None
+
+    if getattr(config, "ML_INVERSE_ENABLED", False):
+        ml_inv = _get_ml_model_inverse()
+
+        # Gate mode: require minimum hand-crafted score first
+        if config.ML_BLEND_MODE == "gate" and score < ml_inv_min_score:
+            block_reasons.append(
+                f"Inverse score {score} below ML gate minimum {ml_inv_min_score}"
+            )
+            diagnostics["block_reasons"] = block_reasons
+            diagnostics["reason"] = block_reasons[-1]
+            return diagnostics if explain else None
+
+        # Get inverse ML prediction
+        if ml_inv.is_available():
+            ml_prob = ml_inv.predict_inverse_proba(
+                df, idx=-1, weekly_bullish=weekly_bullish,
+                spy_df=spy_df, vixy_df=vixy_df,
+            )
+
+        if ml_prob is not None:
+            if ml_prob < ml_inv_threshold:
+                reason = (
+                    f"Inverse ML prob {ml_prob:.3f} below threshold {ml_inv_threshold:.3f}"
+                )
+                block_reasons.append(reason)
+                diagnostics["block_reasons"] = block_reasons
+                diagnostics["ml_prob"] = ml_prob
+                diagnostics["reason"] = reason
+                return diagnostics if explain else None
+            factors.append(f"Inverse ML prob={ml_prob:.2f}")
+            diagnostics["ml_prob"] = ml_prob
+        else:
+            # Inverse model unavailable — fall back to hand-crafted threshold
+            if score < config.ENTRY_SCORE_THRESHOLD:
+                reason = (
+                    f"Inverse score {score} below threshold {config.ENTRY_SCORE_THRESHOLD} "
+                    f"(inverse ML unavailable fallback)"
+                )
+                block_reasons.append(reason)
+                diagnostics["block_reasons"] = block_reasons
+                diagnostics["reason"] = reason
+                return diagnostics if explain else None
+    else:
+        # ── No inverse ML — pure hand-crafted scoring ───────
+        if score < config.ENTRY_SCORE_THRESHOLD:
+            reason = f"Inverse score {score} below threshold {config.ENTRY_SCORE_THRESHOLD}"
+            block_reasons.append(reason)
+            diagnostics["block_reasons"] = block_reasons
+            diagnostics["reason"] = reason
+            return diagnostics if explain else None
+
+    cur = df.iloc[-1]
+    price = cur["close"]
+    atr = cur["atr"]
+
+    reason = f"INVERSE Score {score}: {', '.join(factors)}"
+
+    signal = {
+        "action": "BUY",  # buying inverse ETFs long
+        "price": price,
+        "atr": atr,
+        "rsi": cur["rsi"],
+        "macd_hist": cur["macd_hist"],
+        "adx": cur["adx"],
+        "vol_ratio": cur["vol_ratio"],
+        "score": score,
+        "reason": reason,
+    }
+    if ml_prob is not None:
+        signal["ml_prob"] = ml_prob
+
+    diagnostics.update(
+        {
+            "eligible": True,
+            "factors": factors,
+            "price": price,
+            "atr": atr,
+            "reason": reason,
+            "signal": signal,
+        }
+    )
+    if explain:
+        return diagnostics
+    log.info("INVERSE ETF ENTRY signal: price=%.2f  %s", price, reason)
+    return signal
+
+
+# ─────────────────────────────────────────────
 # BEAR MODE – SHORT EXIT (cover) logic
 # ─────────────────────────────────────────────
 def check_short_exit(df: pd.DataFrame, entry_price: float = 0.0,

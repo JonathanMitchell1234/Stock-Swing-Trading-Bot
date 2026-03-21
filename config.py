@@ -327,6 +327,14 @@ ML_SHORT_MIN_SCORE = 3            # minimum hand-crafted short score before cons
 ML_SHORT_FORWARD_BARS = 5         # forward bars for short label generation
 ML_SHORT_MIN_DROP_PCT = 0.03      # label = 1 if close ≤ entry × (1 - this)
 
+# ── Inverse ETF GBM model (dedicated model for inverse ETF entries) ──
+# Set ML_INVERSE_ENABLED = True after training with: python ml_trainer_inverse.py
+ML_INVERSE_ENABLED = True             # enable the inverse ETF GBM model
+ML_INVERSE_ENTRY_THRESHOLD = 0.40     # minimum inverse GBM probability to enter
+ML_INVERSE_MIN_SCORE = 3              # minimum hand-crafted score before consulting GBM
+ML_INVERSE_FORWARD_BARS = 5           # forward bars for inverse label generation
+ML_INVERSE_MIN_GAIN_PCT = 0.03        # label = 1 if close ≥ entry × (1 + this)
+
 # ─────────────────────────────────────────────
 # NLP Sentiment (FinBERT)
 # ─────────────────────────────────────────────

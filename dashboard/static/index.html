@@ -1140,6 +1140,53 @@
 				color: var(--muted);
 			}
 
+			/* ── ML model selector tabs ──────────────────────────── */
+			.ml-model-tab {
+				background: none;
+				border: none;
+				border-bottom: 2px solid transparent;
+				color: var(--muted);
+				cursor: pointer;
+				font-family: var(--font);
+				font-size: 13px;
+				font-weight: 600;
+				padding: 10px 18px 9px;
+				transition: color 0.15s, border-color 0.15s;
+			}
+			.ml-model-tab:hover {
+				color: var(--text);
+			}
+			.ml-model-tab.active {
+				color: var(--blue);
+				border-bottom-color: var(--blue);
+			}
+			.ml-tab-badge {
+				display: inline-block;
+				font-size: 10px;
+				font-weight: 700;
+				padding: 1px 6px;
+				border-radius: 10px;
+				margin-left: 4px;
+				background: var(--surface2);
+				color: var(--muted);
+				vertical-align: middle;
+			}
+			.ml-tab-badge.loaded {
+				background: rgba(63, 185, 80, 0.15);
+				color: var(--green);
+			}
+			.ml-tab-badge.training {
+				background: rgba(210, 153, 34, 0.15);
+				color: var(--yellow);
+			}
+			.ml-model-panel {
+				animation: fadeIn 0.15s ease;
+			}
+			@keyframes fadeIn {
+				from { opacity: 0; transform: translateY(4px); }
+				to   { opacity: 1; transform: translateY(0); }
+			}
+
 			/* ── Bot control panel ─────────────────────────────────── */
 			.bot-control-grid {
 				display: grid;
@@ -2044,60 +2091,126 @@
 				</div>
 			</div>
 
-			<!-- Row 7: ML Model ───────────────────────────────────── -->
+			<!-- Row 7: ML Models (Three-Brain Architecture) ──────── -->
 			<div class="card" id="ml-card">
 				<div class="card-header">
-					<span class="card-title">🧠 ML Model (GBM)</span>
+					<span class="card-title">🧠 ML Models (Three-Brain GBM)</span>
 					<div style="display: flex; gap: 8px; align-items: center">
-						<span id="ml-enabled-badge" class="ml-enabled-badge off">Disabled</span>
-						<button class="refresh-btn" onclick="loadMLStatus()">↻</button>
+						<button class="refresh-btn" onclick="loadAllMLStatus()">↻</button>
 					</div>
 				</div>
-				<div class="ml-grid">
-					<!-- Left: Model Info + Training ────── -->
-					<div class="ml-panel">
-						<div class="ml-panel-title">Model Status</div>
-						<div class="ml-metric-row">
-							<span class="ml-metric-label">Model loaded</span><span class="ml-metric-value" id="ml-loaded">—</span>
-						</div>
-						<div class="ml-metric-row">
-							<span class="ml-metric-label">Last trained</span><span class="ml-metric-value" id="ml-trained-at">—</span>
-						</div>
-						<div class="ml-metric-row">
-							<span class="ml-metric-label">Samples</span><span class="ml-metric-value" id="ml-samples">—</span>
-						</div>
-						<div class="ml-metric-row">
-							<span class="ml-metric-label">Class balance</span><span class="ml-metric-value" id="ml-balance">—</span>
-						</div>
-						<div style="margin-top: 6px"></div>
-						<div class="ml-panel-title">CV Metrics (avg)</div>
-						<div class="ml-metric-row"><span class="ml-metric-label">AUC</span><span class="ml-metric-value" id="ml-auc">—</span></div>
-						<div class="ml-metric-row">
-							<span class="ml-metric-label">Accuracy</span><span class="ml-metric-value" id="ml-accuracy">—</span>
-						</div>
-						<div class="ml-metric-row">
-							<span class="ml-metric-label">Precision</span><span class="ml-metric-value" id="ml-precision">—</span>
-						</div>
-						<div class="ml-metric-row">
-							<span class="ml-metric-label">Recall</span><span class="ml-metric-value" id="ml-recall">—</span>
-						</div>
-						<div class="ml-metric-row"><span class="ml-metric-label">F1</span><span class="ml-metric-value" id="ml-f1">—</span></div>
-						<div class="ml-metric-row">
-							<span class="ml-metric-label">Log Loss</span><span class="ml-metric-value" id="ml-logloss">—</span>
-						</div>
 
-						<div style="margin-top: 14px; display: flex; gap: 10px; align-items: center">
-							<button class="ml-train-btn" id="ml-train-btn" onclick="trainML()">🚀 Train Model</button>
-							<button class="ml-train-btn" style="background: var(--muted)" onclick="reloadML()">🔄 Reload</button>
+				<!-- Model selector tabs -->
+				<div style="display: flex; gap: 0; border-bottom: 1px solid var(--border); padding: 0 20px">
+					<button class="ml-model-tab active" data-model="long" onclick="switchMLTab('long')">
+						📈 Long <span class="ml-tab-badge" id="ml-long-badge">—</span>
+					</button>
+					<button class="ml-model-tab" data-model="short" onclick="switchMLTab('short')">
+						📉 Short <span class="ml-tab-badge" id="ml-short-badge">—</span>
+					</button>
+					<button class="ml-model-tab" data-model="inverse" onclick="switchMLTab('inverse')">
+						🔄 Inverse ETF <span class="ml-tab-badge" id="ml-inverse-badge">—</span>
+					</button>
+				</div>
+
+				<!-- ── LONG model panel ─────────────────────────── -->
+				<div class="ml-model-panel" id="ml-panel-long">
+					<div class="ml-grid">
+						<div class="ml-panel">
+							<div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+								<div class="ml-panel-title" style="margin-bottom:0">Model Status</div>
+								<span id="ml-long-enabled-badge" class="ml-enabled-badge off">Disabled</span>
+							</div>
+							<div class="ml-metric-row"><span class="ml-metric-label">Model loaded</span><span class="ml-metric-value" id="ml-long-loaded">—</span></div>
+							<div class="ml-metric-row"><span class="ml-metric-label">Last trained</span><span class="ml-metric-value" id="ml-long-trained-at">—</span></div>
+							<div class="ml-metric-row"><span class="ml-metric-label">Samples</span><span class="ml-metric-value" id="ml-long-samples">—</span></div>
+							<div class="ml-metric-row"><span class="ml-metric-label">Class balance</span><span class="ml-metric-value" id="ml-long-balance">—</span></div>
+							<div class="ml-metric-row"><span class="ml-metric-label">Training symbols</span><span class="ml-metric-value" id="ml-long-sym-count">—</span></div>
+							<div style="margin-top:6px"></div>
+							<div class="ml-panel-title">CV Metrics (avg)</div>
+							<div class="ml-metric-row"><span class="ml-metric-label">AUC</span><span class="ml-metric-value" id="ml-long-auc">—</span></div>
+							<div class="ml-metric-row"><span class="ml-metric-label">Accuracy</span><span class="ml-metric-value" id="ml-long-accuracy">—</span></div>
+							<div class="ml-metric-row"><span class="ml-metric-label">Precision</span><span class="ml-metric-value" id="ml-long-precision">—</span></div>
+							<div class="ml-metric-row"><span class="ml-metric-label">Recall</span><span class="ml-metric-value" id="ml-long-recall">—</span></div>
+							<div class="ml-metric-row"><span class="ml-metric-label">F1</span><span class="ml-metric-value" id="ml-long-f1">—</span></div>
+							<div class="ml-metric-row"><span class="ml-metric-label">Log Loss</span><span class="ml-metric-value" id="ml-long-logloss">—</span></div>
+							<div style="margin-top:14px;display:flex;gap:10px;align-items:center">
+								<button class="ml-train-btn" id="ml-long-train-btn" onclick="trainMLModel('long')">🚀 Train Long</button>
+								<button class="ml-train-btn" style="background:var(--muted)" onclick="reloadMLModel('long')">🔄 Reload</button>
+							</div>
+							<div class="ml-status-text" id="ml-long-status"></div>
 						</div>
-						<div class="ml-status-text" id="ml-train-status"></div>
+						<div class="ml-panel">
+							<div class="ml-panel-title">Top Feature Importances</div>
+							<div id="ml-long-feature-bars"><div style="color:var(--muted);font-size:12px;padding:20px 0;text-align:center">No model trained yet</div></div>
+						</div>
 					</div>
+				</div>
 
-					<!-- Right: Feature Importance ─────── -->
-					<div class="ml-panel">
-						<div class="ml-panel-title">Top Feature Importances</div>
-						<div id="ml-feature-bars">
-							<div style="color: var(--muted); font-size: 12px; padding: 20px 0; text-align: center">No model trained yet</div>
+				<!-- ── SHORT model panel ─────────────────────────── -->
+				<div class="ml-model-panel" id="ml-panel-short" style="display:none">
+					<div class="ml-grid">
+						<div class="ml-panel">
+							<div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+								<div class="ml-panel-title" style="margin-bottom:0">Model Status</div>
+								<span id="ml-short-enabled-badge" class="ml-enabled-badge off">Disabled</span>
+							</div>
+							<div class="ml-metric-row"><span class="ml-metric-label">Model loaded</span><span class="ml-metric-value" id="ml-short-loaded">—</span></div>
+							<div class="ml-metric-row"><span class="ml-metric-label">Last trained</span><span class="ml-metric-value" id="ml-short-trained-at">—</span></div>
+							<div class="ml-metric-row"><span class="ml-metric-label">Samples</span><span class="ml-metric-value" id="ml-short-samples">—</span></div>
+							<div class="ml-metric-row"><span class="ml-metric-label">Class balance</span><span class="ml-metric-value" id="ml-short-balance">—</span></div>
+							<div class="ml-metric-row"><span class="ml-metric-label">Training symbols</span><span class="ml-metric-value" id="ml-short-sym-count">—</span></div>
+							<div style="margin-top:6px"></div>
+							<div class="ml-panel-title">CV Metrics (avg)</div>
+							<div class="ml-metric-row"><span class="ml-metric-label">AUC</span><span class="ml-metric-value" id="ml-short-auc">—</span></div>
+							<div class="ml-metric-row"><span class="ml-metric-label">Accuracy</span><span class="ml-metric-value" id="ml-short-accuracy">—</span></div>
+							<div class="ml-metric-row"><span class="ml-metric-label">Precision</span><span class="ml-metric-value" id="ml-short-precision">—</span></div>
+							<div class="ml-metric-row"><span class="ml-metric-label">Recall</span><span class="ml-metric-value" id="ml-short-recall">—</span></div>
+							<div class="ml-metric-row"><span class="ml-metric-label">F1</span><span class="ml-metric-value" id="ml-short-f1">—</span></div>
+							<div class="ml-metric-row"><span class="ml-metric-label">Log Loss</span><span class="ml-metric-value" id="ml-short-logloss">—</span></div>
+							<div style="margin-top:14px;display:flex;gap:10px;align-items:center">
+								<button class="ml-train-btn" style="background:#c0392b" id="ml-short-train-btn" onclick="trainMLModel('short')">🚀 Train Short</button>
+								<button class="ml-train-btn" style="background:var(--muted)" onclick="reloadMLModel('short')">🔄 Reload</button>
+							</div>
+							<div class="ml-status-text" id="ml-short-status"></div>
+						</div>
+						<div class="ml-panel">
+							<div class="ml-panel-title">Top Feature Importances</div>
+							<div id="ml-short-feature-bars"><div style="color:var(--muted);font-size:12px;padding:20px 0;text-align:center">No model trained yet</div></div>
+						</div>
+					</div>
+				</div>
+
+				<!-- ── INVERSE ETF model panel ──────────────────── -->
+				<div class="ml-model-panel" id="ml-panel-inverse" style="display:none">
+					<div class="ml-grid">
+						<div class="ml-panel">
+							<div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+								<div class="ml-panel-title" style="margin-bottom:0">Model Status</div>
+								<span id="ml-inverse-enabled-badge" class="ml-enabled-badge off">Disabled</span>
+							</div>
+							<div class="ml-metric-row"><span class="ml-metric-label">Model loaded</span><span class="ml-metric-value" id="ml-inverse-loaded">—</span></div>
+							<div class="ml-metric-row"><span class="ml-metric-label">Last trained</span><span class="ml-metric-value" id="ml-inverse-trained-at">—</span></div>
+							<div class="ml-metric-row"><span class="ml-metric-label">Samples</span><span class="ml-metric-value" id="ml-inverse-samples">—</span></div>
+							<div class="ml-metric-row"><span class="ml-metric-label">Class balance</span><span class="ml-metric-value" id="ml-inverse-balance">—</span></div>
+							<div class="ml-metric-row"><span class="ml-metric-label">Training symbols</span><span class="ml-metric-value" id="ml-inverse-sym-count">—</span></div>
+							<div style="margin-top:6px"></div>
+							<div class="ml-panel-title">CV Metrics (avg)</div>
+							<div class="ml-metric-row"><span class="ml-metric-label">AUC</span><span class="ml-metric-value" id="ml-inverse-auc">—</span></div>
+							<div class="ml-metric-row"><span class="ml-metric-label">Accuracy</span><span class="ml-metric-value" id="ml-inverse-accuracy">—</span></div>
+							<div class="ml-metric-row"><span class="ml-metric-label">Precision</span><span class="ml-metric-value" id="ml-inverse-precision">—</span></div>
+							<div class="ml-metric-row"><span class="ml-metric-label">Recall</span><span class="ml-metric-value" id="ml-inverse-recall">—</span></div>
+							<div class="ml-metric-row"><span class="ml-metric-label">F1</span><span class="ml-metric-value" id="ml-inverse-f1">—</span></div>
+							<div class="ml-metric-row"><span class="ml-metric-label">Log Loss</span><span class="ml-metric-value" id="ml-inverse-logloss">—</span></div>
+							<div style="margin-top:14px;display:flex;gap:10px;align-items:center">
+								<button class="ml-train-btn" style="background:#7b5ea7" id="ml-inverse-train-btn" onclick="trainMLModel('inverse')">🚀 Train Inverse</button>
+								<button class="ml-train-btn" style="background:var(--muted)" onclick="reloadMLModel('inverse')">🔄 Reload</button>
+							</div>
+							<div class="ml-status-text" id="ml-inverse-status"></div>
+						</div>
+						<div class="ml-panel">
+							<div class="ml-panel-title">Top Feature Importances</div>
+							<div id="ml-inverse-feature-bars"><div style="color:var(--muted);font-size:12px;padding:20px 0;text-align:center">No model trained yet</div></div>
 						</div>
 					</div>
 				</div>
@@ -3598,116 +3711,173 @@
 			   ML MODEL (GBM)
 			   ═══════════════════════════════════════════════════════════ */
 
-			let _mlPollTimer = null;
+			let _mlPollTimers = { long: null, short: null, inverse: null };
+			let _activeMLTab = "long";
 
-			async function loadMLStatus() {
+			// ── Tab switcher ─────────────────────────────────────────
+			function switchMLTab(model) {
+				_activeMLTab = model;
+				document.querySelectorAll(".ml-model-tab").forEach(btn => {
+					btn.classList.toggle("active", btn.dataset.model === model);
+				});
+				document.querySelectorAll(".ml-model-panel").forEach(panel => {
+					panel.style.display = panel.id === `ml-panel-${model}` ? "" : "none";
+				});
+			}
+
+			// ── Populate one model panel from an API response ────────
+			function _applyMLData(model, d) {
+				const p = model; // prefix, e.g. "long", "short", "inverse"
+
+				// Tab badge
+				const badge = $(`ml-${p}-badge`);
+				if (d.training) {
+					badge.textContent = "⏳";
+					badge.className = "ml-tab-badge training";
+				} else if (d.model_loaded) {
+					badge.textContent = "✅";
+					badge.className = "ml-tab-badge loaded";
+				} else {
+					badge.textContent = "—";
+					badge.className = "ml-tab-badge";
+				}
+
+				// Enabled badge inside panel
+				const eb = $(`ml-${p}-enabled-badge`);
+				if (d.ml_enabled) {
+					eb.textContent = "Enabled";
+					eb.className = "ml-enabled-badge on";
+				} else {
+					eb.textContent = "Disabled";
+					eb.className = "ml-enabled-badge off";
+				}
+
+				$(`ml-${p}-loaded`).textContent = d.model_loaded ? "✅ Yes" : "❌ No";
+
+				const meta = d.meta;
+				if (meta) {
+					$(`ml-${p}-trained-at`).textContent = meta.trained_at ? new Date(meta.trained_at).toLocaleString() : "—";
+					$(`ml-${p}-samples`).textContent = (meta.n_samples || 0).toLocaleString();
+					const pos = meta.n_positive || 0;
+					const neg = meta.n_negative || 0;
+					const total = pos + neg;
+					$(`ml-${p}-balance`).textContent = total > 0
+						? `${((pos / total) * 100).toFixed(1)}% pos / ${((neg / total) * 100).toFixed(1)}% neg`
+						: "—";
+					const syms = meta.symbols;
+					$(`ml-${p}-sym-count`).textContent = syms ? `${syms.length} symbols` : "—";
+
+					const avg = meta.avg_metrics || {};
+					$(`ml-${p}-auc`).textContent       = avg.auc       != null ? avg.auc.toFixed(3)                  : "—";
+					$(`ml-${p}-accuracy`).textContent  = avg.accuracy  != null ? (avg.accuracy * 100).toFixed(1) + "%" : "—";
+					$(`ml-${p}-precision`).textContent = avg.precision != null ? (avg.precision * 100).toFixed(1) + "%" : "—";
+					$(`ml-${p}-recall`).textContent    = avg.recall    != null ? (avg.recall * 100).toFixed(1) + "%"  : "—";
+					$(`ml-${p}-f1`).textContent        = avg.f1        != null ? avg.f1.toFixed(3)                   : "—";
+					$(`ml-${p}-logloss`).textContent   = avg.logloss   != null ? avg.logloss.toFixed(4)              : "—";
+
+					// Feature importance bars
+					const imp = meta.feature_importance || {};
+					const entries = Object.entries(imp);
+					const barsEl = $(`ml-${p}-feature-bars`);
+					if (entries.length > 0) {
+						const top15 = entries.slice(0, 15);
+						const maxVal = top15[0][1];
+						let html = "";
+						for (const [name, val] of top15) {
+							const pct = maxVal > 0 ? (val / maxVal) * 100 : 0;
+							html += `<div class="ml-bar-container">
+								<span class="ml-bar-name">${name}</span>
+								<div class="ml-bar-track"><div class="ml-bar-fill" style="width:${pct.toFixed(1)}%"></div></div>
+								<span class="ml-bar-val">${val}</span>
+							</div>`;
+						}
+						barsEl.innerHTML = html;
+					} else {
+						barsEl.innerHTML = `<div style="color:var(--muted);font-size:12px;padding:20px 0;text-align:center">No model trained yet</div>`;
+					}
+				} else {
+					["trained-at","samples","balance","sym-count","auc","accuracy","precision","recall","f1","logloss"].forEach(k => {
+						const el = $(`ml-${p}-${k}`);
+						if (el) el.textContent = "—";
+					});
+					$(`ml-${p}-feature-bars`).innerHTML = `<div style="color:var(--muted);font-size:12px;padding:20px 0;text-align:center">No model trained yet</div>`;
+				}
+
+				// Training state
+				const trainBtn = $(`ml-${p}-train-btn`);
+				const statusEl = $(`ml-${p}-status`);
+				if (d.training) {
+					if (trainBtn) trainBtn.disabled = true;
+					if (statusEl) statusEl.textContent = d.training_status || "Training…";
+					if (!_mlPollTimers[p]) {
+						_mlPollTimers[p] = setInterval(() => loadMLModelStatus(p), 3000);
+					}
+				} else {
+					if (trainBtn) trainBtn.disabled = false;
+					if (d.training_status && statusEl) statusEl.textContent = d.training_status;
+					if (_mlPollTimers[p]) {
+						clearInterval(_mlPollTimers[p]);
+						_mlPollTimers[p] = null;
+					}
+				}
+			}
+
+			// ── Load a single model's status ─────────────────────────
+			async function loadMLModelStatus(model) {
+				const url = model === "long" ? "/api/ml/status" : `/api/ml/${model}/status`;
 				try {
-					const r = await fetch("/api/ml/status");
+					const r = await fetch(url);
 					const d = await r.json();
-
-					// Enabled badge
-					const badge = $("ml-enabled-badge");
-					if (d.ml_enabled) {
-						badge.textContent = "Enabled";
-						badge.className = "ml-enabled-badge on";
-					} else {
-						badge.textContent = "Disabled";
-						badge.className = "ml-enabled-badge off";
-					}
-
-					$("ml-loaded").textContent = d.model_loaded ? "✅ Yes" : "❌ No";
-
-					const meta = d.meta;
-					if (meta) {
-						const trained = meta.trained_at ? new Date(meta.trained_at).toLocaleString() : "—";
-						$("ml-trained-at").textContent = trained;
-						$("ml-samples").textContent = (meta.n_samples || 0).toLocaleString();
-						const pos = meta.n_positive || 0;
-						const neg = meta.n_negative || 0;
-						const total = pos + neg;
-						$("ml-balance").textContent =
-							total > 0 ? `${((pos / total) * 100).toFixed(1)}% pos / ${((neg / total) * 100).toFixed(1)}% neg` : "—";
-
-						const avg = meta.avg_metrics || {};
-						$("ml-auc").textContent = avg.auc != null ? avg.auc.toFixed(3) : "—";
-						$("ml-accuracy").textContent = avg.accuracy != null ? (avg.accuracy * 100).toFixed(1) + "%" : "—";
-						$("ml-precision").textContent = avg.precision != null ? (avg.precision * 100).toFixed(1) + "%" : "—";
-						$("ml-recall").textContent = avg.recall != null ? (avg.recall * 100).toFixed(1) + "%" : "—";
-						$("ml-f1").textContent = avg.f1 != null ? avg.f1.toFixed(3) : "—";
-						$("ml-logloss").textContent = avg.logloss != null ? avg.logloss.toFixed(4) : "—";
-
-						// Feature importance bars
-						const imp = meta.feature_importance || {};
-						const entries = Object.entries(imp);
-						if (entries.length > 0) {
-							const top15 = entries.slice(0, 15);
-							const maxVal = top15[0][1];
-							let html = "";
-							for (const [name, val] of top15) {
-								const pct = maxVal > 0 ? (val / maxVal) * 100 : 0;
-								html += `<div class="ml-bar-container">
-									<span class="ml-bar-name">${name}</span>
-									<div class="ml-bar-track"><div class="ml-bar-fill" style="width:${pct.toFixed(1)}%"></div></div>
-									<span class="ml-bar-val">${val}</span>
-								</div>`;
-							}
-							$("ml-feature-bars").innerHTML = html;
-						}
-					} else {
-						$("ml-trained-at").textContent = "—";
-						$("ml-samples").textContent = "—";
-						$("ml-balance").textContent = "—";
-						["ml-auc", "ml-accuracy", "ml-precision", "ml-recall", "ml-f1", "ml-logloss"].forEach((id) => ($(id).textContent = "—"));
-					}
-
-					// Training status
-					if (d.training) {
-						$("ml-train-btn").disabled = true;
-						$("ml-train-status").textContent = d.training_status || "Training…";
-						// Start polling if not already
-						if (!_mlPollTimer) {
-							_mlPollTimer = setInterval(loadMLStatus, 3000);
-						}
-					} else {
-						$("ml-train-btn").disabled = false;
-						if (d.training_status) {
-							$("ml-train-status").textContent = d.training_status;
-						}
-						// Stop polling
-						if (_mlPollTimer) {
-							clearInterval(_mlPollTimer);
-							_mlPollTimer = null;
-						}
-					}
+					_applyMLData(model, d);
 				} catch (e) {
-					console.warn("ML status error:", e);
+					console.warn(`ML ${model} status error:`, e);
 				}
 			}
 
-			async function trainML() {
-				if (!confirm("Train the GBM model? This downloads data for all watchlist symbols and may take several minutes.")) return;
-				$("ml-train-btn").disabled = true;
-				$("ml-train-status").textContent = "Starting…";
+			// ── Load all three models ────────────────────────────────
+			async function loadAllMLStatus() {
+				await Promise.all(["long", "short", "inverse"].map(m => loadMLModelStatus(m)));
+			}
+
+			// Alias for backwards compat (called on page init)
+			function loadMLStatus() { loadAllMLStatus(); }
+
+			// ── Train a model ────────────────────────────────────────
+			async function trainMLModel(model) {
+				const labels = { long: "Long (all watchlist symbols)", short: "Short (watchlist minus blacklist)", inverse: "Inverse ETF (INVERSE_WATCHLIST only)" };
+				if (!confirm(`Train the ${labels[model]} GBM model? This downloads historical data and may take several minutes.`)) return;
+
+				const url = model === "long" ? "/api/ml/train" : `/api/ml/${model}/train`;
+				const trainBtn = $(`ml-${model}-train-btn`);
+				const statusEl = $(`ml-${model}-status`);
+				if (trainBtn) trainBtn.disabled = true;
+				if (statusEl) statusEl.textContent = "Starting…";
 				try {
-					await fetch("/api/ml/train", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
-					// Start polling
-					_mlPollTimer = setInterval(loadMLStatus, 3000);
+					await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+					_mlPollTimers[model] = setInterval(() => loadMLModelStatus(model), 3000);
 				} catch (e) {
-					$("ml-train-status").textContent = "Error: " + e.message;
-					$("ml-train-btn").disabled = false;
+					if (statusEl) statusEl.textContent = "Error: " + e.message;
+					if (trainBtn) trainBtn.disabled = false;
 				}
 			}
 
-			async function reloadML() {
+			// ── Reload a model from disk ─────────────────────────────
+			async function reloadMLModel(model) {
+				const url = model === "long" ? "/api/ml/reload" : `/api/ml/${model}/reload`;
+				const statusEl = $(`ml-${model}-status`);
 				try {
-					const r = await fetch("/api/ml/reload", { method: "POST" });
+					const r = await fetch(url, { method: "POST" });
 					const d = await r.json();
-					$("ml-train-status").textContent = d.model_loaded ? "Model reloaded ✅" : "No model file found";
-					loadMLStatus();
+					if (statusEl) statusEl.textContent = d.model_loaded ? "Model reloaded ✅" : "No model file found";
+					loadMLModelStatus(model);
 				} catch (e) {
-					$("ml-train-status").textContent = "Error: " + e.message;
+					if (statusEl) statusEl.textContent = "Error: " + e.message;
 				}
 			}
+
+			// Legacy aliases (in case anything else calls the old names)
+			function trainML()  { trainMLModel("long"); }
+			function reloadML() { reloadMLModel("long"); }
 
 			/* ═══════════════════════════════════════════════════════════
 			   BOT CONTROL

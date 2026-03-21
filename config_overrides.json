@@ -77,7 +77,14 @@
     "SOXS",
     "SPXS",
     "SH",
-    "PSQ"
+    "PSQ",
+    "TZA",
+    "SRTY",
+    "RWM",
+    "SDOW",
+    "DOG",
+    "FAZ",
+    "DRV"
   ],
   "DEAD_MONEY_DAYS": 4,
   "MIN_HOLD_CALENDAR_DAYS": 1,
