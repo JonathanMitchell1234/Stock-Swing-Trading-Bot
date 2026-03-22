@@ -1836,6 +1836,15 @@
 								<label class="cfg-label">Tight Trail %<span class="cfg-hint">Tighter trail %</span></label
 								><input type="number" class="cfg-input" data-key="TRAILING_STOP_TIGHT_PCT" min="0.01" max="0.1" step="0.005" />
 							</div>
+							<div class="cfg-section-title">Chandelier Exit (ATR-Based)</div>
+							<div class="cfg-row">
+								<label class="cfg-label">ATR Multiplier<span class="cfg-hint">Stop = High &minus; (ATR &times; mult). Default&nbsp;1.5</span></label
+								><input type="number" class="cfg-input" data-key="ATR_TRAILING_STOP_MULT" min="0.5" max="4.0" step="0.1" />
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">ATR Tight Multiplier<span class="cfg-hint">Tighter mult once profit &gt; tight threshold. Default&nbsp;1.0</span></label
+								><input type="number" class="cfg-input" data-key="ATR_TRAILING_STOP_TIGHT_MULT" min="0.5" max="3.0" step="0.1" />
+							</div>
 							<div class="cfg-section-title">Dead-Money Exit</div>
 							<div class="cfg-row">
 								<label class="cfg-label">Dead Money Days<span class="cfg-hint">Exit if flat after N days</span></label
@@ -2037,6 +2046,35 @@
 							<div class="cfg-row">
 								<label class="cfg-label">Check Exits (min)<span class="cfg-hint">Check exit signals every N min</span></label
 								><input type="number" class="cfg-input" data-key="CHECK_EXITS_MINUTES" min="5" max="60" step="5" />
+							</div>
+						</div>
+
+						<div class="cfg-grid">
+							<div class="cfg-section-title">NLP Sentiment Filter</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Sentiment Enabled<span class="cfg-hint">Enable FinBERT pre-trade sentiment filter</span></label
+								><input type="number" class="cfg-input" data-key="NLP_SENTIMENT_ENABLED" min="0" max="1" step="1" />
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Min Sentiment Score<span class="cfg-hint">Reject entries with FinBERT score below this value</span></label
+								><input type="number" class="cfg-input" data-key="NLP_MIN_SENTIMENT" min="-1" max="0" step="0.05" />
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Headlines per Symbol<span class="cfg-hint">Number of news articles fetched for pre-trade filter</span></label
+								><input type="number" class="cfg-input" data-key="NLP_NEWS_LIMIT_PER_SYMBOL" min="1" max="50" step="1" />
+							</div>
+							<div class="cfg-section-title">Catalyst Ejection Shield (Live)</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Ejection Enabled<span class="cfg-hint">Stream Alpaca news WebSocket &amp; auto-sell on extreme negative catalyst</span></label
+								><input type="number" class="cfg-input" data-key="NLP_NEWS_EJECTION_ENABLED" min="0" max="1" step="1" />
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Ejection Threshold<span class="cfg-hint">FinBERT score that triggers ejection (default -0.80)</span></label
+								><input type="number" class="cfg-input" data-key="NLP_EJECTION_THRESHOLD" min="-1" max="-0.1" step="0.05" />
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Ejection Cooldown (s)<span class="cfg-hint">Minimum seconds between ejections for the same symbol</span></label
+								><input type="number" class="cfg-input" data-key="NLP_EJECTION_COOLDOWN_SECS" min="60" max="3600" step="60" />
 							</div>
 						</div>
 
@@ -2444,6 +2482,15 @@
 											<label class="cfg-label">Tight Trail %<span class="cfg-hint">Tighter trail %</span></label
 											><input type="number" class="bt-cfg-input" data-btkey="TRAILING_STOP_TIGHT_PCT" min="0.01" max="0.1" step="0.005" />
 										</div>
+										<div class="cfg-section-title">Chandelier Exit (ATR-Based)</div>
+										<div class="cfg-row">
+											<label class="cfg-label">ATR Multiplier<span class="cfg-hint">Stop = High &minus; (ATR &times; mult). Default&nbsp;1.5</span></label
+											><input type="number" class="bt-cfg-input" data-btkey="ATR_TRAILING_STOP_MULT" min="0.5" max="4.0" step="0.1" />
+										</div>
+										<div class="cfg-row">
+											<label class="cfg-label">ATR Tight Multiplier<span class="cfg-hint">Tighter mult once profit &gt; tight threshold. Default&nbsp;1.0</span></label
+											><input type="number" class="bt-cfg-input" data-btkey="ATR_TRAILING_STOP_TIGHT_MULT" min="0.5" max="3.0" step="0.1" />
+										</div>
 										<div class="cfg-section-title">Dead-Money Exit</div>
 										<div class="cfg-row">
 											<label class="cfg-label">Dead Money Days<span class="cfg-hint">Exit if flat after N days</span></label
@@ -2636,7 +2683,22 @@
 											><input type="number" class="bt-cfg-input" data-btkey="MIN_AVG_VOLUME" min="50000" max="10000000" step="50000" />
 										</div>
 									</div>
-								</div>
+										<div class="cfg-grid">
+											<div class="cfg-section-title">NLP Sentiment Filter</div>
+											<div class="cfg-row">
+												<label class="cfg-label">Sentiment Enabled<span class="cfg-hint">Enable FinBERT pre-trade sentiment filter</span></label
+												><input type="number" class="bt-cfg-input" data-btkey="NLP_SENTIMENT_ENABLED" min="0" max="1" step="1" />
+											</div>
+											<div class="cfg-row">
+												<label class="cfg-label">Min Sentiment Score<span class="cfg-hint">Reject entries with FinBERT score below this value</span></label
+												><input type="number" class="bt-cfg-input" data-btkey="NLP_MIN_SENTIMENT" min="-1" max="0" step="0.05" />
+											</div>
+											<div class="cfg-row">
+												<label class="cfg-label">Headlines per Symbol<span class="cfg-hint">Number of news articles fetched for pre-trade filter</span></label
+												><input type="number" class="bt-cfg-input" data-btkey="NLP_NEWS_LIMIT_PER_SYMBOL" min="1" max="50" step="1" />
+											</div>
+										</div>
+
 
 								<!-- Save bar -->
 								<div style="padding: 12px 20px 8px; border-top: 1px solid var(--border); display: flex; gap: 10px; align-items: center; margin-top: 8px">
@@ -3451,7 +3513,8 @@
 
 			function _cfgCoerce(key, raw) {
 				const orig = _cfgOriginal[key];
-				if (typeof orig === "boolean" || raw === "true" || raw === "false") return raw === "true" || raw === true;
+				if (typeof orig === "boolean" || raw === "true" || raw === "false")
+					return raw === "true" || raw === true || Number(raw) === 1;
 				if (typeof orig === "number") return Number(raw);
 				return raw;
 			}
@@ -3575,7 +3638,8 @@
 
 			function _btCfgCoerce(key, raw) {
 				const orig = _btCfgOriginal[key];
-				if (typeof orig === "boolean" || raw === "true" || raw === "false") return raw === "true" || raw === true;
+				if (typeof orig === "boolean" || raw === "true" || raw === "false")
+					return raw === "true" || raw === true || Number(raw) === 1;
 				if (typeof orig === "number") return Number(raw);
 				return raw;
 			}

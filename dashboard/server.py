@@ -541,6 +541,7 @@ _CONFIG_EDITABLE_KEYS = {
     "MAX_LOSS_PER_TRADE_PCT", "MAX_PORTFOLIO_EXPOSURE_PCT",
     "TRAILING_STOP_ACTIVATE_PCT", "TRAILING_STOP_PCT",
     "TRAILING_STOP_TIGHT_ACTIVATE", "TRAILING_STOP_TIGHT_PCT",
+    "ATR_TRAILING_STOP_MULT", "ATR_TRAILING_STOP_TIGHT_MULT",
     # Small account
     "SMALL_ACCOUNT_THRESHOLD", "FRACTIONAL_SHARES",
     "SMALL_MAX_OPEN_POSITIONS", "SMALL_MAX_POSITION_PCT",
@@ -567,6 +568,9 @@ _CONFIG_EDITABLE_KEYS = {
     "ML_ENABLED", "ML_ENTRY_THRESHOLD", "ML_MIN_SCORE",
     "ML_BLEND_MODE", "ML_FORWARD_BARS",
     "ML_MIN_GAIN_PCT", "ML_TRAINING_MONTHS",
+    # NLP Sentiment & Ejection Shield
+    "NLP_SENTIMENT_ENABLED", "NLP_MIN_SENTIMENT", "NLP_NEWS_LIMIT_PER_SYMBOL",
+    "NLP_NEWS_EJECTION_ENABLED", "NLP_EJECTION_THRESHOLD", "NLP_EJECTION_COOLDOWN_SECS",
     # Data feed
     "DATA_FEED",
 }
@@ -586,6 +590,13 @@ def _apply_overrides(overrides: dict) -> None:
     """Apply a dict of key→value onto the live config module."""
     for key, val in overrides.items():
         if key in _CONFIG_EDITABLE_KEYS and hasattr(config, key):
+            expected = type(getattr(config, key))
+            if expected is bool and not isinstance(val, bool):
+                val = bool(val)
+            elif expected is int and not isinstance(val, bool):
+                val = int(val)
+            elif expected is float:
+                val = float(val)
             setattr(config, key, val)
 
 

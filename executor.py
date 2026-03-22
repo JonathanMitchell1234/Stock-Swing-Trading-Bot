@@ -320,14 +320,20 @@ class TradeExecutor:
 
     def _manage_trailing_stop(self, pos, unrealised_pct: float,
                               current_price: float, qty: float) -> None:
-        """Manage trailing stop orders for a LONG position."""
+        """Manage trailing stop orders for a LONG position (Chandelier Exit).
+
+        Uses ATR-based dynamic stops: stop = high − (ATR × mult).
+        Falls back to static percentage if ATR is unavailable.
+        """
         symbol = pos.symbol
 
-        # Determine which trailing stop level applies
+        # Determine which trailing stop tier applies
         if unrealised_pct >= config.TRAILING_STOP_TIGHT_ACTIVATE:
-            trail_pct = config.TRAILING_STOP_TIGHT_PCT
+            fallback_pct = config.TRAILING_STOP_TIGHT_PCT
+            atr_mult = getattr(config, "ATR_TRAILING_STOP_TIGHT_MULT", 1.0)
         elif unrealised_pct >= config.TRAILING_STOP_ACTIVATE_PCT:
-            trail_pct = config.TRAILING_STOP_PCT
+            fallback_pct = config.TRAILING_STOP_PCT
+            atr_mult = getattr(config, "ATR_TRAILING_STOP_MULT", 1.5)
         else:
             return  # not profitable enough for a trailing stop
 
@@ -344,32 +350,54 @@ class TradeExecutor:
                 existing_stop = o
 
         if has_native_trailing:
-            # Native trailing stop handles ratcheting automatically
             return
 
+        # Compute ATR-based Chandelier stop; fall back to static %
+        atr_val = 0.0
+        try:
+            df = self.broker.get_bars(symbol)
+            if df is not None and len(df) >= 15:
+                df = compute_all(df)
+                atr_val = float(df.iloc[-1].get("atr", 0) or 0)
+        except Exception as exc:
+            log.debug("ATR lookup failed for %s trailing stop: %s", symbol, exc)
+
+        if atr_val > 0:
+            ideal_stop = round(current_price - atr_mult * atr_val, 2)
+            trail_label = f"ATR×{atr_mult}"
+        else:
+            ideal_stop = round(current_price * (1 - fallback_pct), 2)
+            trail_label = f"{fallback_pct*100:.1f}%"
+
         if existing_stop is not None:
-            # Emulated stop for fractional shares: ratchet up
-            ideal_stop = round(current_price * (1 - trail_pct), 2)
             current_stop = float(existing_stop.stop_price)
             if ideal_stop > current_stop:
                 log.info(
-                    "Ratcheting emulated trailing stop for %s: %.2f → %.2f "
-                    "(price=%.2f, trail=%.1f%%)",
-                    symbol, current_stop, ideal_stop, current_price, trail_pct * 100,
+                    "Ratcheting trailing stop for %s: %.2f → %.2f "
+                    "(price=%.2f, trail=%s, ATR=%.2f)",
+                    symbol, current_stop, ideal_stop, current_price,
+                    trail_label, atr_val,
                 )
                 try:
                     self.broker.api.cancel_order(existing_stop.id)
-                    self.broker.submit_trailing_stop(symbol, qty, trail_pct)
+                    self.broker.submit_trailing_stop(
+                        symbol, qty, fallback_pct,
+                        stop_price=ideal_stop,
+                        trail_amount=round(atr_mult * atr_val, 2) if atr_val > 0 else None,
+                    )
                 except Exception as exc:
                     log.warning("Trailing stop ratchet failed for %s: %s", symbol, exc)
         else:
-            # No stop at all — submit new one
             log.info(
-                "Adding trailing stop for %s (%.1f%% profit, trail=%.1f%%)",
-                symbol, unrealised_pct * 100, trail_pct * 100,
+                "Adding trailing stop for %s (%.1f%% profit, trail=%s, ATR=%.2f)",
+                symbol, unrealised_pct * 100, trail_label, atr_val,
             )
             try:
-                self.broker.submit_trailing_stop(symbol, qty, trail_pct)
+                self.broker.submit_trailing_stop(
+                    symbol, qty, fallback_pct,
+                    stop_price=ideal_stop,
+                    trail_amount=round(atr_mult * atr_val, 2) if atr_val > 0 else None,
+                )
             except Exception as exc:
                 log.warning("Trailing stop failed for %s: %s", symbol, exc)
 

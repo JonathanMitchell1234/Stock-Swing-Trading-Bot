@@ -21,6 +21,7 @@ import schedule
 import config
 from broker import AlpacaBroker
 from executor import TradeExecutor
+from news_monitor import NewsMonitor
 from logger import get_logger
 
 log = get_logger("main")
@@ -40,7 +41,6 @@ def _graceful_shutdown(signum, frame):
         except Exception as exc:
             log.error("Failed to save PDT ledger: %s", exc)
     sys.exit(0)
-
 
 # Register signal handlers
 signal.signal(signal.SIGTERM, _graceful_shutdown)
@@ -115,6 +115,11 @@ def run_loop() -> None:
     executor = TradeExecutor()
     global _executor
     _executor = executor
+
+    # Start the live news ejection shield (no-op if disabled in config)
+    news_monitor = NewsMonitor(executor.broker)
+    news_monitor.start()
+
     _morning_done_date: list[dt.date] = [None]  # mutable container for closure
     _last_full_cycle_time: list[float] = [0.0]   # timestamp of last full_cycle run
 

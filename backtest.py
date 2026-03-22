@@ -850,21 +850,30 @@ class Backtester:
                                      exit_price=pos.take_profit)
                 continue
 
-            # Adaptive trailing stop: tighter as profit grows
+            # Adaptive trailing stop (Chandelier Exit): ATR-based, tighter as profit grows
             profit_pct = (pos.highest_price - pos.entry_price) / pos.entry_price
             if profit_pct >= config.TRAILING_STOP_TIGHT_ACTIVATE:
-                trail_pct = config.TRAILING_STOP_TIGHT_PCT
+                atr_mult = getattr(config, "ATR_TRAILING_STOP_TIGHT_MULT", 1.0)
+                fallback_pct = config.TRAILING_STOP_TIGHT_PCT
             elif profit_pct >= config.TRAILING_STOP_ACTIVATE_PCT:
-                trail_pct = config.TRAILING_STOP_PCT
+                atr_mult = getattr(config, "ATR_TRAILING_STOP_MULT", 1.5)
+                fallback_pct = config.TRAILING_STOP_PCT
             else:
-                trail_pct = None
+                atr_mult = None
+                fallback_pct = None
 
-            if trail_pct is not None:
-                trail_price = pos.highest_price * (1 - trail_pct)
+            if atr_mult is not None:
+                # Use ATR-based Chandelier Exit when ATR available
+                cur_atr = float(row.get("atr", 0) or 0)
+                if cur_atr > 0:
+                    trail_price = pos.highest_price - atr_mult * cur_atr
+                else:
+                    trail_price = pos.highest_price * (1 - fallback_pct)
+
                 if low <= trail_price:
                     self._close_position(
                         symbol, date,
-                        f"Trailing stop ({trail_pct*100:.1f}% from ${pos.highest_price:.2f})",
+                        f"Chandelier stop (ATR×{atr_mult} from ${pos.highest_price:.2f})",
                         exit_price=trail_price,
                     )
                     continue
@@ -898,21 +907,29 @@ class Backtester:
                                            exit_price=pos.take_profit)
                 continue
 
-            # Adaptive trailing stop for shorts: tracks lowest price, triggers on rise
+            # Adaptive trailing stop for shorts (Chandelier Exit): ATR-based
             profit_pct = (pos.entry_price - pos.lowest_price) / pos.entry_price
             if profit_pct >= config.TRAILING_STOP_TIGHT_ACTIVATE:
-                trail_pct = config.TRAILING_STOP_TIGHT_PCT
+                atr_mult = getattr(config, "ATR_TRAILING_STOP_TIGHT_MULT", 1.0)
+                fallback_pct = config.TRAILING_STOP_TIGHT_PCT
             elif profit_pct >= config.TRAILING_STOP_ACTIVATE_PCT:
-                trail_pct = config.TRAILING_STOP_PCT
+                atr_mult = getattr(config, "ATR_TRAILING_STOP_MULT", 1.5)
+                fallback_pct = config.TRAILING_STOP_PCT
             else:
-                trail_pct = None
+                atr_mult = None
+                fallback_pct = None
 
-            if trail_pct is not None:
-                trail_price = pos.lowest_price * (1 + trail_pct)
+            if atr_mult is not None:
+                cur_atr = float(row.get("atr", 0) or 0)
+                if cur_atr > 0:
+                    trail_price = pos.lowest_price + atr_mult * cur_atr
+                else:
+                    trail_price = pos.lowest_price * (1 + fallback_pct)
+
                 if high >= trail_price:
                     self._close_short_position(
                         symbol, date,
-                        f"Trailing stop short ({trail_pct*100:.1f}% from ${pos.lowest_price:.2f})",
+                        f"Chandelier stop short (ATR×{atr_mult} from ${pos.lowest_price:.2f})",
                         exit_price=trail_price,
                     )
                     continue

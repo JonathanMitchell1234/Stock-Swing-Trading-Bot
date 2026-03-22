@@ -318,12 +318,19 @@ class AlpacaBroker:
             time_in_force="day",
         )
 
-    def submit_trailing_stop(self, symbol: str, qty: float, trail_pct: float):
+    def submit_trailing_stop(self, symbol: str, qty: float, trail_pct: float,
+                             stop_price: float | None = None,
+                             trail_amount: float | None = None):
         """Submit a trailing-stop sell order.
-        Note: Alpaca does not support trailing stop orders for fractional shares.
-        If qty is fractional, we will submit a standard stop order based on the 
-        current price and the trail_pct. The executor will continuously update 
-        this stop if the price moves up.
+
+        Parameters
+        ----------
+        trail_pct    : fallback percentage (used only when stop_price/trail_amount
+                       are not provided — legacy static-% mode).
+        stop_price   : absolute stop price (Chandelier Exit).  Used for emulated
+                       (fractional-share) stops.
+        trail_amount : dollar distance for native trailing stops (integer shares).
+                       If not provided, falls back to trail_pct.
         """
         if qty <= 0:
             return None
@@ -331,10 +338,19 @@ class AlpacaBroker:
         is_fractional = qty % 1 != 0
         
         if is_fractional:
-            log.info("TRAILING STOP (Emulated) %s  qty=%f  trail=%.1f%%  (fractional fallback)", symbol, qty, trail_pct * 100)
+            # Emulated stop for fractional shares — use explicit stop_price
+            # when available, otherwise fall back to percentage.
+            if stop_price is None:
+                try:
+                    current_price = self.get_latest_price(symbol)
+                    stop_price = round(current_price * (1 - trail_pct), 2)
+                except Exception as exc:
+                    log.warning("Emulated trailing stop failed for %s: %s", symbol, exc)
+                    return None
+
+            log.info("TRAILING STOP (Emulated) %s  qty=%f  stop=%.2f  (fractional fallback)",
+                     symbol, qty, stop_price)
             try:
-                current_price = self.get_latest_price(symbol)
-                stop_price = round(current_price * (1 - trail_pct), 2)
                 return self.api.submit_order(
                     symbol=symbol,
                     qty=qty,
@@ -348,8 +364,19 @@ class AlpacaBroker:
                 return None
                 
         # Pure integer share sizes can use native trailing stops
+        if trail_amount is not None and trail_amount > 0:
+            log.info("TRAILING STOP  %s  qty=%f  trail=$%.2f (ATR-based)",
+                     symbol, qty, trail_amount)
+            return self.api.submit_order(
+                symbol=symbol,
+                qty=qty,
+                side="sell",
+                type="trailing_stop",
+                trail_price=str(round(trail_amount, 2)),
+                time_in_force="gtc",
+            )
+
         log.info("TRAILING STOP  %s  qty=%f  trail=%.1f%%", symbol, qty, trail_pct * 100)
-        
         return self.api.submit_order(
             symbol=symbol,
             qty=qty,

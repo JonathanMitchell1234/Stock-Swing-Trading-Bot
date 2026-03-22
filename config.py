@@ -242,11 +242,17 @@ MAX_PORTFOLIO_RISK_PCT = 0.06     # max 6% total portfolio at risk
 MAX_LOSS_PER_TRADE_PCT = 0.02     # risk at most 2% of equity per trade
 MAX_PORTFOLIO_EXPOSURE_PCT = 0.95  # never use more than 95% buying power
 TRAILING_STOP_ACTIVATE_PCT = 0.06  # activate trailing stop after 6% gain
-TRAILING_STOP_PCT = 0.04          # 4% trailing stop on winners
+TRAILING_STOP_PCT = 0.04          # 4% trailing stop on winners (fallback when ATR unavailable)
+
+# ── ATR-based (Chandelier Exit) trailing stop ────────────────
+# Dynamic stop = highest_price − (ATR × multiplier)
+# Adapts to each stock's volatility so MARA isn't shaken out and JNJ locks in gains.
+ATR_TRAILING_STOP_MULT = 1.5         # standard Chandelier multiplier
+ATR_TRAILING_STOP_TIGHT_MULT = 1.0   # tighter multiplier once profit exceeds tight threshold
 
 # ── Adaptive stop: tighten trailing stop as profit grows ─────
 TRAILING_STOP_TIGHT_ACTIVATE = 0.15  # above 15% profit, tighten
-TRAILING_STOP_TIGHT_PCT = 0.03       # to 3% trailing stop
+TRAILING_STOP_TIGHT_PCT = 0.03       # to 3% trailing stop (fallback when ATR unavailable)
 
 # ── Small-account overrides (auto-applied when equity < SMALL_ACCOUNT_THRESHOLD)
 SMALL_MAX_OPEN_POSITIONS = 3       # concentrate with tiny capital
@@ -343,6 +349,15 @@ NLP_NEWS_LIMIT_PER_SYMBOL = 10    # how many recent headlines to fetch per ticke
 NLP_MIN_SENTIMENT = -0.20         # reject trade if news sentiment is below this threshold (negative)
 NLP_DEVICE = "auto"               # "auto", "cuda", or "cpu"
 NLP_USE_FP16 = True               # use float16 on CUDA to reduce memory and improve throughput
+
+# ── Live news WebSocket — Catalyst Ejection Shield ───────────────────
+# Streams Alpaca’s real-time news feed in a background thread.  When FinBERT
+# scores a headline for an open position below NLP_EJECTION_THRESHOLD, the bot
+# immediately issues a market sell — before technical indicators can react.
+#   Requires:  `pip install websockets`  (added to requirements.txt)
+NLP_NEWS_EJECTION_ENABLED  = False   # master switch (enable once websockets is installed)
+NLP_EJECTION_THRESHOLD     = -0.80   # FinBERT score that triggers ejection (FDA reject / scandal)
+NLP_EJECTION_COOLDOWN_SECS = 300     # minimum seconds between ejections for the same symbol
 
 # ─────────────────────────────────────────────
 # Logging
