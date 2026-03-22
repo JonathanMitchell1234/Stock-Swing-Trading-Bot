@@ -163,6 +163,15 @@ INVERSE_WATCHLIST = [
     "SOXS",   # Direxion Daily Semiconductor Bear 3×
 ]
 
+# ── Portfolio Correlation Guard ────────────────────────────
+# Before approving a new entry, the bot calculates the 30-day Pearson
+# correlation of the candidate against all currently open positions.
+# If |r| >= MAX_CORRELATION for any pair the trade is rejected so that
+# capital is truly diversified rather than just superficially spread.
+CORRELATION_GUARD_ENABLED = True
+CORRELATION_LOOKBACK = 30       # trading days of close-price history to use
+MAX_CORRELATION = 0.85          # reject entry if |r| >= this vs any open position
+
 # ── Sector exposure limits ─────────────────────────────────
 MAX_PER_SECTOR = 99             # effectively disabled for testing
 SECTOR_MAP = {
@@ -228,6 +237,18 @@ DYNAMIC_THRESHOLD_ADJUSTMENT = 1  # +/- this amount
 USE_LIMIT_ORDERS = True             # True = limit buy, False = market buy
 LIMIT_ORDER_OFFSET_PCT = 0.001      # limit price = last_price * (1 + offset), e.g. 0.1% above
 LIMIT_ORDER_TIF = "day"             # time-in-force: "day" cancels at market close if unfilled
+
+# ── VWAP Execution (micro-slicing for high-conviction ML setups) ──────────
+# When a long entry has ML probability >= VWAP_ML_THRESHOLD the bot splits
+# the full order into VWAP_SLICES smaller limit orders spaced
+# VWAP_INTERVAL_SECONDS apart (default: 5 slices × 3 min = 15-min window).
+# This captures the average price of a breakout's initial volume surge
+# instead of chasing it with a single block limit order.
+# Execution runs in a background daemon thread; the main loop continues.
+VWAP_EXECUTION_ENABLED = True
+VWAP_ML_THRESHOLD = 0.70        # min ML probability to trigger VWAP routing
+VWAP_SLICES = 5                 # number of child limit orders
+VWAP_INTERVAL_SECONDS = 180     # seconds between slices (5 × 3 min = 15-min window)
 
 # Delay new entries for N minutes after market open to avoid the
 # chaotic first-30-minute price discovery / spread-widening period.

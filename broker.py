@@ -129,6 +129,103 @@ class AlpacaBroker:
             order_params["take_profit"] = {"limit_price": round(take_profit, 2)}
         return self.api.submit_order(**order_params)
 
+    def submit_vwap_buy(
+        self,
+        symbol: str,
+        qty: float,
+        stop_loss: Optional[float] = None,
+        take_profit: Optional[float] = None,
+        slices: int = 5,
+        interval_seconds: int = 180,
+    ) -> None:
+        """
+        Micro-VWAP execution: split *qty* into *slices* limit orders spaced
+        *interval_seconds* apart, submitted in a background daemon thread.
+
+        Each slice re-fetches the latest price and applies
+        ``LIMIT_ORDER_OFFSET_PCT`` so the limit rises with the breakout.
+        A stop-loss is attached to each slice so the position is protected
+        even during the spread-out fill window.
+
+        The method returns immediately; execution continues asynchronously.
+        """
+        import threading
+        import time
+
+        if qty <= 0:
+            log.warning("VWAP: skipping – qty=%.4f for %s", qty, symbol)
+            return
+
+        if config.FRACTIONAL_SHARES:
+            per_slice = round(qty / slices, 3)
+        else:
+            per_slice = int(qty // slices)
+
+        if per_slice <= 0:
+            log.warning(
+                "VWAP: per-slice qty too small for %s "
+                "(total=%.3f slices=%d) – falling back to single order",
+                symbol, qty, slices,
+            )
+            self.submit_market_buy(symbol, qty, stop_loss=stop_loss, take_profit=take_profit)
+            return
+
+        def _execute() -> None:
+            submitted_qty = 0.0
+            for i in range(slices):
+                # Final slice absorbs any rounding residual
+                if i == slices - 1:
+                    slice_qty = (
+                        round(qty - submitted_qty, 3)
+                        if config.FRACTIONAL_SHARES
+                        else int(qty - submitted_qty)
+                    )
+                else:
+                    slice_qty = per_slice
+
+                if slice_qty <= 0:
+                    break
+
+                try:
+                    last_price = self.get_latest_price(symbol)
+                    limit_price = round(
+                        last_price * (1 + config.LIMIT_ORDER_OFFSET_PCT), 2
+                    )
+                    log.info(
+                        "VWAP slice %d/%d  %s  qty=%.3f  limit=%.2f",
+                        i + 1, slices, symbol, slice_qty, limit_price,
+                    )
+                    self.submit_limit_buy(
+                        symbol,
+                        slice_qty,
+                        limit_price,
+                        stop_loss=stop_loss,
+                        take_profit=take_profit,
+                    )
+                    submitted_qty += slice_qty
+                except Exception as exc:
+                    log.warning(
+                        "VWAP slice %d/%d failed for %s: %s – continuing",
+                        i + 1, slices, symbol, exc,
+                    )
+
+                if i < slices - 1:
+                    time.sleep(interval_seconds)
+
+            log.info(
+                "VWAP EXECUTION complete: %s  submitted_qty=%.3f / %.3f",
+                symbol, submitted_qty, qty,
+            )
+
+        thread = threading.Thread(
+            target=_execute, name=f"vwap-{symbol}", daemon=True
+        )
+        thread.start()
+        log.info(
+            "VWAP EXECUTION started: %s  total_qty=%.3f  %d slices × %ds",
+            symbol, qty, slices, interval_seconds,
+        )
+
     def submit_market_buy(
         self,
         symbol: str,

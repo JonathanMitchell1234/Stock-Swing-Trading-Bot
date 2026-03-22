@@ -8,6 +8,8 @@ from __future__ import annotations
 import math
 from typing import Optional
 
+import pandas as pd
+
 import config
 from logger import get_logger
 
@@ -36,6 +38,34 @@ class RiskManager:
             )
             return False
         return True
+
+    def check_correlation(
+        self,
+        candidate_closes: pd.Series,
+        position_closes: dict[str, pd.Series],
+    ) -> tuple[bool, str]:
+        """
+        Pearson correlation guard.
+
+        Aligns *candidate_closes* against each open position's close
+        series on their shared dates, then computes the 30-day Pearson r.
+        Returns ``(True, reason)`` if the candidate is too correlated with
+        any existing position and the trade should be rejected.
+        Returns ``(False, "")`` when the candidate is safe to enter.
+        """
+        threshold = config.MAX_CORRELATION
+        for sym, pos_closes in position_closes.items():
+            aligned = pd.concat(
+                [candidate_closes.rename("_c"), pos_closes.rename("_p")],
+                axis=1,
+            ).dropna()
+            if len(aligned) < 10:
+                # Not enough overlapping history – skip this pair
+                continue
+            corr = float(aligned["_c"].corr(aligned["_p"]))
+            if abs(corr) >= threshold:
+                return True, f"{sym} (r={corr:.2f})"
+        return False, ""
 
     # ── position sizing ──────────────────────────────────────
     def calculate_position_size(

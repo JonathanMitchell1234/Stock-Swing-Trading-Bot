@@ -542,6 +542,25 @@ class TradeExecutor:
         )
         opened = 0
 
+        # Pre-fetch close-price series for all open positions so that the
+        # correlation guard can reuse the same data across every candidate
+        # without making redundant broker calls.
+        _pos_closes: dict[str, pd.Series] = {}
+        if config.CORRELATION_GUARD_ENABLED and positions:
+            for _pos in positions:
+                try:
+                    _df = self.broker.get_bars(
+                        _pos.symbol,
+                        limit=config.CORRELATION_LOOKBACK + 5,
+                    )
+                    if _df is not None and len(_df) >= 10:
+                        _pos_closes[_pos.symbol] = _df["close"]
+                except Exception as _exc:
+                    log.debug(
+                        "Correlation guard: could not fetch %s: %s",
+                        _pos.symbol, _exc,
+                    )
+
         for c in candidates:
             symbol = c["symbol"]
             if symbol in held or symbol in pending:
@@ -566,6 +585,24 @@ class TradeExecutor:
                          sector, self._sector_counts.get(sector, 0),
                          config.MAX_PER_SECTOR, symbol)
                 continue
+
+            # Portfolio correlation guard – reject if the candidate moves
+            # too closely with an already-held position (cross-sector included).
+            if config.CORRELATION_GUARD_ENABLED and _pos_closes:
+                try:
+                    cand_closes = c["df"]["close"].tail(config.CORRELATION_LOOKBACK)
+                    blocked, reason = self.risk.check_correlation(cand_closes, _pos_closes)
+                    if blocked:
+                        log.info(
+                            "SKIP %s – correlation >= %.0f%% with %s",
+                            symbol, config.MAX_CORRELATION * 100, reason,
+                        )
+                        continue
+                except Exception as _exc:
+                    log.debug(
+                        "Correlation guard check failed for %s: %s – proceeding",
+                        symbol, _exc,
+                    )
 
             # Weekly trend check
             weekly_bull = True
@@ -658,10 +695,33 @@ class TradeExecutor:
             symbol, qty, entry_price, stop_loss, take_profit, signal["reason"],
         )
 
+        # ── Route: VWAP slicing for high-conviction ML setups ──────────
+        ml_prob = signal.get("ml_prob")
+        use_vwap = (
+            config.VWAP_EXECUTION_ENABLED
+            and ml_prob is not None
+            and ml_prob >= config.VWAP_ML_THRESHOLD
+        )
+
         try:
-            self.broker.submit_market_buy(
-                symbol, qty, stop_loss=stop_loss, take_profit=take_profit
-            )
+            if use_vwap:
+                log.info(
+                    "VWAP routing active for %s (ml_prob=%.3f >= %.2f) – "
+                    "splitting into %d slices over %ds",
+                    symbol, ml_prob, config.VWAP_ML_THRESHOLD,
+                    config.VWAP_SLICES, config.VWAP_INTERVAL_SECONDS * config.VWAP_SLICES,
+                )
+                self.broker.submit_vwap_buy(
+                    symbol, qty,
+                    stop_loss=stop_loss,
+                    take_profit=take_profit,
+                    slices=config.VWAP_SLICES,
+                    interval_seconds=config.VWAP_INTERVAL_SECONDS,
+                )
+            else:
+                self.broker.submit_market_buy(
+                    symbol, qty, stop_loss=stop_loss, take_profit=take_profit
+                )
             self.pdt.record_buy(symbol)
             self.risk.open_positions += 1
             self._sector_counts[sector] = self._sector_counts.get(sector, 0) + 1
