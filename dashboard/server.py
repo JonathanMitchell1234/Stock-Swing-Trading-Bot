@@ -499,6 +499,147 @@ async def stream():
 
 
 # ─────────────────────────────────────────────────────────────
+# Trade Journal / Performance / Fill-Quality endpoints
+# ─────────────────────────────────────────────────────────────
+
+@app.get("/api/journal")
+async def get_journal(limit: int = 100):
+    """Return the most recent closed trades with entry signal attribution."""
+    try:
+        from trade_journal import TradeJournal
+        trades = TradeJournal().get_closed_trades(limit=limit)
+        # Sanitise floats for JSON serialisation
+        clean = []
+        for t in trades:
+            clean.append({k: (None if isinstance(v, float) and not (v == v) else v)
+                          for k, v in t.items()})
+        return JSONResponse(content=clean)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/api/performance")
+async def get_performance():
+    """Return aggregate performance statistics computed from the trade journal."""
+    try:
+        from trade_journal import TradeJournal
+        stats = TradeJournal().get_performance_stats()
+        # Replace non-finite values so JSON serialisation doesn't error
+        safe = {k: (None if isinstance(v, float) and not math.isfinite(v) else v)
+                for k, v in stats.items()}
+        return JSONResponse(content=safe)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/api/fill_metrics")
+async def get_fill_metrics():
+    """Return fill-quality / slippage metrics from the trade journal."""
+    try:
+        from trade_journal import TradeJournal
+        return JSONResponse(content=TradeJournal().get_fill_metrics())
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/api/journal/backfill")
+async def journal_backfill(days: int = 90):
+    """
+    Fetch closed orders from Alpaca and backfill them into the trade journal.
+    Only inserts trades that don't already exist (idempotent).
+    Returns the number of new rows inserted.
+    """
+    try:
+        import collections
+        from trade_journal import TradeJournal
+        api = _get_api()
+        journal = TradeJournal()
+
+        # Pull up to 500 filled orders, oldest first
+        after_dt = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=days)
+        after_str = after_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+        orders = api.list_orders(
+            status="closed", limit=500, direction="asc", after=after_str
+        )
+        filled = [o for o in orders if getattr(o, "status", "") == "filled" and getattr(o, "filled_at", None)]
+
+        # FIFO matching: buy orders open a position, sell orders close it
+        # Also handle short-side: sell opens, buy closes
+        open_longs: dict[str, list] = collections.defaultdict(list)   # symbol → [{ts, price, qty}]
+        open_shorts: dict[str, list] = collections.defaultdict(list)
+
+        inserted = 0
+
+        def _ts(order) -> str:
+            fa = order.filled_at
+            if hasattr(fa, "isoformat"):
+                return fa.isoformat()
+            s = str(fa)
+            # Ensure UTC marker
+            if not s.endswith("Z") and "+" not in s:
+                s += "Z"
+            return s
+
+        def _days_between(ts1: str, ts2: str) -> int:
+            try:
+                fmt = "%Y-%m-%dT%H:%M:%S.%f+00:00"
+                for fmt_try in ("%Y-%m-%dT%H:%M:%S.%f+00:00", "%Y-%m-%dT%H:%M:%S+00:00",
+                                "%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ"):
+                    try:
+                        d1 = dt.datetime.strptime(ts1.replace("Z", "+00:00").replace("+00:00+00:00", "+00:00"), fmt_try)
+                        d2 = dt.datetime.strptime(ts2.replace("Z", "+00:00").replace("+00:00+00:00", "+00:00"), fmt_try)
+                        return max(0, (d2 - d1).days)
+                    except ValueError:
+                        continue
+            except Exception:
+                pass
+            return 0
+
+        for o in filled:
+            sym   = o.symbol
+            side  = o.side          # 'buy' or 'sell'
+            qty   = _safe_float(getattr(o, "filled_qty", 0))
+            price = _safe_float(getattr(o, "filled_avg_price", 0))
+            ts    = _ts(o)
+
+            # Detect short orders: order_class or 'short' in order type not reliably set,
+            # so we use a heuristic: if we have no open long and receive a 'sell', treat as short open
+            if side == "buy":
+                if open_shorts[sym]:
+                    # Buy-to-cover closes a short
+                    entry = open_shorts[sym].pop(0)
+                    match_qty = min(qty, entry["qty"])
+                    pnl = (entry["price"] - price) * match_qty  # short profits when price falls
+                    hold = _days_between(entry["ts"], ts)
+                    if journal.backfill_trade(sym, "short", entry["ts"], ts,
+                                              entry["price"], price, match_qty,
+                                              round(pnl, 4), hold):
+                        inserted += 1
+                else:
+                    open_longs[sym].append({"ts": ts, "price": price, "qty": qty})
+
+            elif side == "sell":
+                if open_longs[sym]:
+                    # Sell closes a long
+                    entry = open_longs[sym].pop(0)
+                    match_qty = min(qty, entry["qty"])
+                    pnl = (price - entry["price"]) * match_qty
+                    hold = _days_between(entry["ts"], ts)
+                    if journal.backfill_trade(sym, "long", entry["ts"], ts,
+                                              entry["price"], price, match_qty,
+                                              round(pnl, 4), hold):
+                        inserted += 1
+                else:
+                    # No open long found — treat as short entry
+                    open_shorts[sym].append({"ts": ts, "price": price, "qty": qty})
+
+        return JSONResponse({"inserted": inserted, "status": "ok",
+                             "message": f"Backfilled {inserted} trade(s) from the last {days} days."})
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+# ─────────────────────────────────────────────────────────────
 # Config read / write endpoints
 # ─────────────────────────────────────────────────────────────
 

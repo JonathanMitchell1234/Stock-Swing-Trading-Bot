@@ -16,6 +16,7 @@ from pdt_guard import PDTGuard
 from risk_manager import RiskManager
 from screener import Screener
 from strategy import check_entry, check_exit, check_short_entry, check_short_exit, check_inverse_entry
+from trade_journal import TradeJournal
 from logger import get_logger
 
 log = get_logger("executor")
@@ -31,6 +32,7 @@ class TradeExecutor:
         self._init_risk_manager()
         self._sector_counts: dict[str, int] = {}
         self._rebuild_sector_counts()
+        self.journal = TradeJournal()
 
     def _init_risk_manager(self) -> None:
         equity = self.broker.get_equity()
@@ -289,6 +291,18 @@ class TradeExecutor:
                         self.broker.submit_market_sell(symbol, abs_qty)
                     self.pdt.record_sell(symbol)
                     closed += 1
+                    # Journal exit
+                    if is_short:
+                        trade_pnl = (entry_price - current_price) * abs_qty
+                    else:
+                        trade_pnl = (current_price - entry_price) * abs_qty
+                    self.journal.record_exit(
+                        symbol,
+                        exit_price=current_price,
+                        pnl=trade_pnl,
+                        hold_days=hold_days,
+                        exit_reason=", ".join(signal.get("reasons", [])),
+                    )
                 except Exception as exc:
                     log.error("%s order failed for %s: %s",
                               "Cover" if is_short else "Sell", symbol, exc)
@@ -725,6 +739,12 @@ class TradeExecutor:
             self.pdt.record_buy(symbol)
             self.risk.open_positions += 1
             self._sector_counts[sector] = self._sector_counts.get(sector, 0) + 1
+            self.journal.record_entry(
+                symbol, "long", entry_price, qty, stop_loss, take_profit,
+                signal, regime="bull",
+                vwap_used=use_vwap,
+                order_type="vwap" if use_vwap else "market",
+            )
             return 1
         except Exception as exc:
             log.error("Buy order failed for %s: %s", symbol, exc)
@@ -809,6 +829,10 @@ class TradeExecutor:
             self.pdt.record_buy(symbol)
             self.risk.open_positions += 1
             self._sector_counts[sector] = self._sector_counts.get(sector, 0) + 1
+            self.journal.record_entry(
+                symbol, "inverse", entry_price, qty, stop_loss, take_profit,
+                signal, regime="bear", vwap_used=False, order_type="market",
+            )
             return 1
         except Exception as exc:
             log.error("Inverse ETF buy order failed for %s: %s", symbol, exc)
@@ -882,6 +906,10 @@ class TradeExecutor:
             self.pdt.record_buy(symbol)
             self.risk.open_positions += 1
             self._sector_counts[sector] = self._sector_counts.get(sector, 0) + 1
+            self.journal.record_entry(
+                symbol, "short", entry_price, qty, stop_loss, take_profit,
+                signal, regime="bear", vwap_used=False, order_type="market",
+            )
             return 1
         except Exception as exc:
             log.error("Short sell order failed for %s: %s", symbol, exc)

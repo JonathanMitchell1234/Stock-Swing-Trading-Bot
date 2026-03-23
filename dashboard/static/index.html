@@ -1649,7 +1649,131 @@
 				</div>
 			</div>
 
-			<!-- Row 5: Log viewer ─────────────────────────────────── -->
+			<!-- Row 5: Performance Analytics ─────────────────────── -->
+			<div class="card">
+				<div class="card-header">
+					<span class="card-title">📊 Performance Analytics</span>
+					<button class="refresh-btn" onclick="loadPerformance()">↻ Refresh</button>
+				</div>
+				<div class="card-body">
+					<div class="stat-grid" id="perf-stat-grid" style="margin-bottom:0">
+						<div class="stat-card">
+							<div class="stat-label">Win Rate</div>
+							<div class="stat-value" id="perf-win-rate">—</div>
+							<div class="stat-sub" id="perf-total-trades"></div>
+						</div>
+						<div class="stat-card">
+							<div class="stat-label">Profit Factor</div>
+							<div class="stat-value" id="perf-profit-factor">—</div>
+							<div class="stat-sub">gross profit / gross loss</div>
+						</div>
+						<div class="stat-card">
+							<div class="stat-label">Avg Win</div>
+							<div class="stat-value" id="perf-avg-win">—</div>
+							<div class="stat-sub" id="perf-avg-loss"></div>
+						</div>
+						<div class="stat-card">
+							<div class="stat-label">Sharpe (ann.)</div>
+							<div class="stat-value" id="perf-sharpe">—</div>
+							<div class="stat-sub" id="perf-avg-hold"></div>
+						</div>
+						<div class="stat-card">
+							<div class="stat-label">Max Drawdown</div>
+							<div class="stat-value" id="perf-max-dd">—</div>
+							<div class="stat-sub" id="perf-cur-dd"></div>
+						</div>
+						<div class="stat-card">
+							<div class="stat-label">Last-10 Win Rate</div>
+							<div class="stat-value" id="perf-rolling-wr">—</div>
+							<div class="stat-sub">rolling 10-trade window</div>
+						</div>
+					</div>
+				</div>
+			</div>
+
+			<!-- Row 6: Trade Journal ───────────────────────────────── -->
+			<div class="card">
+				<div class="card-header">
+					<span class="card-title">📒 Trade Journal</span>
+					<div style="display:flex; gap:8px; align-items:center">
+						<span id="journal-backfill-status" style="font-size:11px; color:var(--muted)"></span>
+						<button class="refresh-btn" id="journal-backfill-btn" onclick="backfillJournal()">⬇ Backfill from Alpaca</button>
+						<button class="refresh-btn" onclick="loadJournal()">↻ Refresh</button>
+					</div>
+				</div>
+				<div class="card-body" style="padding:0; overflow-x:auto">
+					<table class="data-table">
+						<thead>
+							<tr>
+								<th>Symbol</th>
+								<th>Side</th>
+								<th>Entry Date</th>
+								<th>Exit Date</th>
+								<th>Entry $</th>
+								<th>Exit $</th>
+								<th>P&amp;L</th>
+								<th>P&amp;L %</th>
+								<th>Hold Days</th>
+								<th>Score</th>
+								<th>ML Prob</th>
+								<th>Order</th>
+								<th>Exit Reason</th>
+								<th>Signal Factors</th>
+							</tr>
+						</thead>
+						<tbody id="journal-tbody">
+							<tr class="loading-row">
+								<td colspan="14"><span class="spinner"></span> Loading…</td>
+							</tr>
+						</tbody>
+					</table>
+				</div>
+			</div>
+
+			<!-- Row 7: Fill Quality ────────────────────────────────── -->
+			<div class="card">
+				<div class="card-header">
+					<span class="card-title">⚡ Fill Quality</span>
+					<button class="refresh-btn" onclick="loadFillMetrics()">↻ Refresh</button>
+				</div>
+				<div class="card-body">
+					<div style="display:grid; grid-template-columns:1fr 1fr; gap:24px">
+						<div>
+							<div style="font-size:11px; font-weight:600; color:var(--muted); text-transform:uppercase; letter-spacing:0.4px; margin-bottom:8px">By Symbol</div>
+							<table class="data-table">
+								<thead>
+									<tr>
+										<th>Symbol</th>
+										<th>Avg Slippage (bps)</th>
+										<th>Trades</th>
+									</tr>
+								</thead>
+								<tbody id="fill-symbol-tbody">
+									<tr class="loading-row"><td colspan="3"><span class="spinner"></span> Loading…</td></tr>
+								</tbody>
+							</table>
+						</div>
+						<div>
+							<div style="font-size:11px; font-weight:600; color:var(--muted); text-transform:uppercase; letter-spacing:0.4px; margin-bottom:8px">By Order Type</div>
+							<table class="data-table">
+								<thead>
+									<tr>
+										<th>Order Type</th>
+										<th>Avg Slippage (bps)</th>
+										<th>Trades</th>
+									</tr>
+								</thead>
+								<tbody id="fill-type-tbody">
+									<tr class="loading-row"><td colspan="3"><span class="spinner"></span> Loading…</td></tr>
+								</tbody>
+							</table>
+						</div>
+					</div>
+					<div id="fill-aggregate" style="margin-top:12px; font-size:12px; color:var(--muted)"></div>
+				</div>
+			</div>
+
+			<!-- Row 8: Log viewer ─────────────────────────────────── -->
 			<div class="card">
 				<div class="card-header">
 					<span class="card-title">Bot Log</span>
@@ -3198,6 +3322,139 @@
 				});
 			}
 
+			/* ── Performance Analytics ───────────────────────────────── */
+			async function loadPerformance() {
+				try {
+					const d = await apiFetch("/api/performance");
+					const fmt = (v, suffix = "") => v != null ? v + suffix : "—";
+					const fmtMoney = (v) => v != null ? (v >= 0 ? "+" : "") + "$" + v.toFixed(2) : "—";
+					const fmtPct = (v) => v != null ? v.toFixed(1) + "%" : "—";
+
+					const wrEl = $("perf-win-rate");
+					wrEl.textContent = fmtPct(d.win_rate);
+					wrEl.style.color = d.win_rate >= 50 ? "var(--green)" : d.win_rate != null ? "var(--red)" : "var(--text)";
+
+					const pfEl = $("perf-profit-factor");
+					pfEl.textContent = d.profit_factor != null ? d.profit_factor.toFixed(2) : "—";
+					pfEl.style.color = d.profit_factor >= 1 ? "var(--green)" : d.profit_factor != null ? "var(--red)" : "var(--text)";
+
+					$("perf-total-trades").textContent = d.total_trades + " trades";
+					$("perf-avg-win").textContent = fmtMoney(d.avg_win);
+					$("perf-avg-win").style.color = "var(--green)";
+					$("perf-avg-loss").textContent = "Avg loss: " + fmtMoney(d.avg_loss);
+
+					const shrEl = $("perf-sharpe");
+					shrEl.textContent = d.sharpe_ratio != null ? d.sharpe_ratio.toFixed(2) : "—";
+					shrEl.style.color = d.sharpe_ratio >= 1 ? "var(--green)" : d.sharpe_ratio != null ? "var(--yellow)" : "var(--text)";
+					$("perf-avg-hold").textContent = d.avg_hold_days != null ? "Avg hold: " + d.avg_hold_days + "d" : "";
+
+					const maxDdEl = $("perf-max-dd");
+					maxDdEl.textContent = fmtPct(d.max_drawdown_pct);
+					maxDdEl.style.color = d.max_drawdown_pct > 10 ? "var(--red)" : "var(--yellow)";
+					$("perf-cur-dd").textContent = d.current_drawdown_pct != null ? "Current: " + d.current_drawdown_pct.toFixed(1) + "%" : "";
+
+					const rwEl = $("perf-rolling-wr");
+					rwEl.textContent = fmtPct(d.rolling_10_win_rate);
+					rwEl.style.color = d.rolling_10_win_rate >= 50 ? "var(--green)" : d.rolling_10_win_rate != null ? "var(--red)" : "var(--text)";
+				} catch (e) {
+					console.error("loadPerformance:", e);
+				}
+			}
+
+			/* ── Trade Journal ───────────────────────────────────────── */
+			async function loadJournal() {
+				const tbody = $("journal-tbody");
+				try {
+					const trades = await apiFetch("/api/journal?limit=100");
+					if (!trades.length) {
+						tbody.innerHTML = '<tr><td colspan="14" style="text-align:center;color:var(--muted);padding:24px">No closed trades yet.</td></tr>';
+						return;
+					}
+					const fmtDate = (iso) => iso ? iso.slice(0, 10) : "—";
+					const fmtP = (v) => v != null ? (v >= 0 ? "+" : "") + "$" + parseFloat(v).toFixed(2) : "—";
+					const fmtPct = (v) => v != null ? (v >= 0 ? "+" : "") + parseFloat(v).toFixed(2) + "%" : "—";
+					const fmtNum = (v) => v != null ? parseFloat(v).toFixed(3) : "—";
+					tbody.innerHTML = trades.map(t => {
+						const pnlColor = t.pnl > 0 ? "var(--green)" : t.pnl < 0 ? "var(--red)" : "var(--text)";
+						const sideColor = t.side === "long" ? "var(--green)" : "var(--red)";
+						const orderBadge = t.vwap_used ? '<span style="background:var(--purple);color:#fff;padding:1px 6px;border-radius:4px;font-size:10px">VWAP</span>' : (t.order_type || "market");
+						return `<tr>
+							<td style="font-weight:600">${t.symbol}</td>
+							<td style="color:${sideColor}">${(t.side||"").toUpperCase()}</td>
+							<td>${fmtDate(t.entry_time)}</td>
+							<td>${fmtDate(t.exit_time)}</td>
+							<td>$${t.entry_price != null ? parseFloat(t.entry_price).toFixed(2) : "—"}</td>
+							<td>$${t.exit_price != null ? parseFloat(t.exit_price).toFixed(2) : "—"}</td>
+							<td style="color:${pnlColor};font-weight:600">${fmtP(t.pnl)}</td>
+							<td style="color:${pnlColor}">${fmtPct(t.pnl_pct)}</td>
+							<td>${t.hold_days != null ? t.hold_days + "d" : "—"}</td>
+							<td>${t.signal_score != null ? t.signal_score : "—"}</td>
+							<td>${t.ml_prob != null ? fmtNum(t.ml_prob) : "—"}</td>
+							<td>${orderBadge}</td>
+							<td style="color:var(--muted);max-width:160px;overflow:hidden;text-overflow:ellipsis" title="${t.exit_reason||''}">${t.exit_reason||"—"}</td>
+							<td style="color:var(--muted);max-width:200px;overflow:hidden;text-overflow:ellipsis" title="${t.signal_reason||''}">${t.signal_reason||"—"}</td>
+						</tr>`;
+					}).join("");
+				} catch (e) {
+					tbody.innerHTML = '<tr><td colspan="14" style="color:var(--red)">Error loading journal.</td></tr>';
+					console.error("loadJournal:", e);
+				}
+			}
+
+			/* ── Fill Quality ────────────────────────────────────────── */
+			async function loadFillMetrics() {
+				const symTbody = $("fill-symbol-tbody");
+				const typeTbody = $("fill-type-tbody");
+				const aggEl = $("fill-aggregate");
+				try {
+					const d = await apiFetch("/api/fill_metrics");
+					if (!d.by_symbol.length && !d.by_order_type.length) {
+						const msg = '<tr><td colspan="3" style="text-align:center;color:var(--muted);padding:16px">No fill data yet.</td></tr>';
+						symTbody.innerHTML = msg;
+						typeTbody.innerHTML = msg;
+						aggEl.textContent = "";
+						return;
+					}
+					symTbody.innerHTML = d.by_symbol.map(r =>
+						`<tr><td>${r.symbol}</td><td>${r.avg_slippage_bps.toFixed(1)}</td><td>${r.trades}</td></tr>`
+					).join("") || '<tr><td colspan="3" style="color:var(--muted)">—</td></tr>';
+
+					typeTbody.innerHTML = d.by_order_type.map(r =>
+						`<tr><td style="text-transform:capitalize">${r.order_type}</td><td>${r.avg_slippage_bps.toFixed(1)}</td><td>${r.trades}</td></tr>`
+					).join("") || '<tr><td colspan="3" style="color:var(--muted)">—</td></tr>';
+
+					if (d.aggregate && d.aggregate.total_fills_tracked) {
+						aggEl.textContent = `Overall avg slippage: ${d.aggregate.avg_slippage_bps.toFixed(1)} bps across ${d.aggregate.total_fills_tracked} fills`;
+					}
+				} catch (e) {
+					console.error("loadFillMetrics:", e);
+				}
+			}
+
+			/* ── Journal Backfill ────────────────────────────────────── */
+			async function backfillJournal() {
+				const btn = $("journal-backfill-btn");
+				const status = $("journal-backfill-status");
+				btn.disabled = true;
+				btn.textContent = "⏳ Importing…";
+				status.textContent = "";
+				try {
+					const resp = await fetch("/api/journal/backfill?days=90", { method: "POST" });
+					const d = await resp.json();
+					if (!resp.ok) throw new Error(d.detail || "Unknown error");
+					status.textContent = d.message;
+					status.style.color = "var(--green)";
+					await Promise.all([loadJournal(), loadPerformance(), loadFillMetrics()]);
+				} catch (e) {
+					status.textContent = "Error: " + e.message;
+					status.style.color = "var(--red)";
+					console.error("backfillJournal:", e);
+				} finally {
+					btn.disabled = false;
+					btn.textContent = "⬇ Backfill from Alpaca";
+				}
+			}
+
 			/* ── Log viewer ──────────────────────────────────────────── */
 			async function loadLogs() {
 				const box = $("log-box");
@@ -3315,6 +3572,9 @@
 				loadConfig();
 				loadBtConfig();
 				loadWatchlistEditor();
+				loadPerformance();
+				loadJournal();
+				loadFillMetrics();
 
 				// Bot control — load status then pre-fill buffered logs
 				await loadBotStatus();
@@ -3344,6 +3604,9 @@
 				setInterval(loadBotStatus, 15_000); // bot status every 15 s
 				// Watchlist is slow (30 API calls) — refresh every 5 min
 				setInterval(loadWatchlist, 300_000);
+				setInterval(loadPerformance, 300_000); // every 5 min
+				setInterval(loadJournal, 120_000);     // every 2 min
+				setInterval(loadFillMetrics, 300_000); // every 5 min
 			}
 
 			window.addEventListener("load", init);
