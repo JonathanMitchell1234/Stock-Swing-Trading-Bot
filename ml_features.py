@@ -69,9 +69,15 @@ FEATURE_NAMES: list[str] = [
     "entry_score",
     # Calendar
     "day_of_week",          # 0=Mon … 4=Fri
+    # Price-action microstructure
+    "lower_wick_ratio",     # (min(open,close)-low) / (high-low)  — absorption signal
+    "close_position",       # (close-low) / (high-low)  — where close sits in the range
     # Macro context (replaces raw month — avoids calendar overfitting)
     "spy_sma200_dist",      # SPY close / SPY SMA-200 − 1
     "vixy_relative",        # VIXY close / VIXY 20-SMA − 1
+    # Relative strength (beta-adjusted)
+    "spy_corr_5d",          # 5-day rolling correlation of stock vs SPY returns
+    "spy_rel_strength_5d",  # 5-day cumulative stock return − SPY return
 ]
 
 NUM_FEATURES = len(FEATURE_NAMES)
@@ -249,6 +255,15 @@ def extract_row(df: pd.DataFrame, idx: int = -1, weekly_bullish: bool = True,
     except Exception:
         entry_score = 0
 
+    # ── Price-action microstructure ────────────────────────
+    o = _safe(cur.get("open"))
+    h = _safe(cur.get("high"))
+    lo = _safe(cur.get("low"))
+    candle_range = h - lo
+    body_low = min(o, close) if o > 0 else close
+    lower_wick_ratio = _safe_div(body_low - lo, candle_range) if candle_range > 0 else 0.0
+    close_position = _safe_div(close - lo, candle_range, 0.5) if candle_range > 0 else 0.5
+
     # ── Calendar ─────────────────────────────────────────────
     dt_index = df.index[abs_idx]
     try:
@@ -291,6 +306,27 @@ def extract_row(df: pd.DataFrame, idx: int = -1, weekly_bullish: bool = True,
         except Exception:
             pass
 
+    # ── Relative Strength vs SPY ──────────────────────────
+    spy_corr_5d = 0.0
+    spy_rel_strength_5d = 0.0
+    if bar_date is not None and spy_df is not None and not spy_df.empty:
+        try:
+            spy_idx_rs = spy_df.index.searchsorted(bar_date, side="right") - 1
+            if spy_idx_rs >= 5:
+                stock_rets = df["close"].iloc[max(0, abs_idx - 5):abs_idx + 1].pct_change().dropna()
+                spy_rets = spy_df["close"].iloc[max(0, spy_idx_rs - 5):spy_idx_rs + 1].pct_change().dropna()
+                min_len = min(len(stock_rets), len(spy_rets))
+                if min_len >= 4:
+                    sr = stock_rets.iloc[-min_len:].values
+                    sp = spy_rets.iloc[-min_len:].values
+                    # Guard against zero-std flatlined data (causes np.corrcoef divide-by-zero)
+                    if sr.std() > 1e-8 and sp.std() > 1e-8:
+                        corr_matrix = np.corrcoef(sr, sp)
+                        spy_corr_5d = float(corr_matrix[0, 1]) if not np.isnan(corr_matrix[0, 1]) else 0.0
+                    spy_rel_strength_5d = float(sr.sum() - sp.sum())
+        except Exception:
+            pass
+
     # ── Assemble feature vector (must match FEATURE_NAMES order) ─
     return [
         dist_ema_fast, dist_ema_slow, dist_ema_trend, dist_ema_200,
@@ -306,7 +342,9 @@ def extract_row(df: pd.DataFrame, idx: int = -1, weekly_bullish: bool = True,
         dist_support, dist_resistance,
         float(entry_score),
         dow,
+        lower_wick_ratio, close_position,
         spy_sma200_dist, vixy_relative,
+        spy_corr_5d, spy_rel_strength_5d,
     ]
 
 
@@ -346,25 +384,25 @@ def generate_labels(
     indices: list[int],
     forward_bars: int = 5,
     min_gain_pct: float = 0.03,
+    atr_multiplier: float = 0.0,
     **_kwargs,
 ) -> np.ndarray:
     """
     Generate binary labels for the training set.
 
-    Simplified target: "Does the closing price reach ≥ *min_gain_pct*
-    above the entry price within *forward_bars* bars?"
-
-    This predicts immediate momentum — whether the setup sparks — and
-    lets the bot's trailing stops / exit logic manage the rest of the
-    trade.  Much easier for the model to learn than wide ATR brackets.
+    When *atr_multiplier* > 0 the target is volatility-adjusted:
+        target = entry_price + atr_multiplier × ATR-14
+    Otherwise it falls back to the static percentage:
+        target = entry_price × (1 + min_gain_pct)
 
     Entry is assumed at the NEXT bar's open.
       - label = 1 if any close in [entry_bar .. entry_bar+forward_bars]
-                  is ≥ entry_price × (1 + min_gain_pct)
+                  hits the target
       - label = 0 otherwise
     """
     labels = np.zeros(len(indices), dtype=np.int32)
     n = len(df)
+    use_atr = atr_multiplier > 0 and "atr" in df.columns
 
     for i, bar_idx in enumerate(indices):
         entry_bar = bar_idx + 1  # enter on next bar's open
@@ -375,7 +413,13 @@ def generate_labels(
         if pd.isna(entry_price) or entry_price <= 0:
             continue
 
-        target = entry_price * (1.0 + min_gain_pct)
+        if use_atr:
+            atr_val = df.iloc[bar_idx].get("atr")
+            if pd.isna(atr_val) or atr_val <= 0:
+                atr_val = entry_price * min_gain_pct  # fallback
+            target = entry_price + atr_multiplier * atr_val
+        else:
+            target = entry_price * (1.0 + min_gain_pct)
 
         # Walk forward — did any close hit our target?
         end = min(entry_bar + forward_bars, n)

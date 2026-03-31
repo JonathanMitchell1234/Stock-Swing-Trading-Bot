@@ -61,6 +61,7 @@ def build_short_dataset(
     data: Dict[str, pd.DataFrame],
     forward_bars: int = 5,
     min_drop_pct: float = 0.03,
+    atr_multiplier: float = 0.0,
     progress_callback=None,
     spy_df: Optional[pd.DataFrame] = None,
     vixy_df: Optional[pd.DataFrame] = None,
@@ -94,6 +95,7 @@ def build_short_dataset(
             df, valid_idx,
             forward_bars=forward_bars,
             min_drop_pct=min_drop_pct,
+            atr_multiplier=atr_multiplier,
         )
 
         all_X.append(X)
@@ -112,6 +114,14 @@ def build_short_dataset(
     X_out = np.vstack(all_X)
     y_out = np.concatenate(all_y)
     all_dates_combined = pd.DatetimeIndex(np.concatenate([d.values for d in all_dates]))
+
+    # Sort everything chronologically so TimeSeriesSplit splits by date,
+    # not by symbol order (fixes data-leak where folds mixed time periods).
+    sort_idx = np.argsort(all_dates_combined)
+    X_out = X_out[sort_idx]
+    y_out = y_out[sort_idx]
+    all_dates_combined = all_dates_combined[sort_idx]
+    all_syms = [all_syms[i] for i in sort_idx]
 
     if config.ML_RECENCY_WEIGHT_ENABLED:
         weights = compute_recency_weights(
@@ -144,6 +154,7 @@ def train_short_model(
     weights: Optional[np.ndarray] = None,
     params: Optional[dict] = None,
     n_splits: int = 5,
+    forward_bars: int = 5,
 ) -> Tuple:
     """
     Train a LightGBM binary classifier for SHORT entry prediction.
@@ -151,7 +162,7 @@ def train_short_model(
     """
     # Re-use the training function from ml_trainer
     from ml_trainer import train_model
-    return train_model(X, y, weights=weights, params=params, n_splits=n_splits)
+    return train_model(X, y, weights=weights, params=params, n_splits=n_splits, forward_bars=forward_bars)
 
 
 # ═════════════════════════════════════════════════════════════
@@ -164,10 +175,11 @@ def tune_short_hyperparams(
     weights: Optional[np.ndarray] = None,
     n_trials: int = 50,
     n_splits: int = 3,
+    forward_bars: int = 5,
 ) -> dict:
     """Run Optuna to find the best LightGBM hyperparameters for SHORT model."""
     from ml_trainer import tune_hyperparams
-    return tune_hyperparams(X, y, weights=weights, n_trials=n_trials, n_splits=n_splits)
+    return tune_hyperparams(X, y, weights=weights, n_trials=n_trials, n_splits=n_splits, forward_bars=forward_bars)
 
 
 # ═════════════════════════════════════════════════════════════
@@ -198,6 +210,7 @@ def run_short_training(
     tune: bool = False,
     forward_bars: int = 5,
     min_drop_pct: float = 0.03,
+    atr_multiplier: float = 0.0,
     progress_callback=None,
 ) -> dict:
     """
@@ -220,8 +233,12 @@ def run_short_training(
 
     log.info("=" * 60)
     log.info("SHORT ML TRAINING START — %d symbols, %d months history", len(symbols), months)
-    log.info("Label: ≥%.1f%% DROP within %d bars",
-             min_drop_pct * 100, forward_bars)
+    if atr_multiplier > 0:
+        log.info("Label: ATR-based target (%.1f× ATR-14) DROP within %d bars",
+                 atr_multiplier, forward_bars)
+    else:
+        log.info("Label: ≥%.1f%% DROP within %d bars",
+                 min_drop_pct * 100, forward_bars)
     if config.ML_RECENCY_WEIGHT_ENABLED:
         log.info(
             "Recency weighting: ENABLED  halflife=%d days  min_weight=%.2f",
@@ -264,6 +281,7 @@ def run_short_training(
         data,
         forward_bars=forward_bars,
         min_drop_pct=min_drop_pct,
+        atr_multiplier=atr_multiplier,
         progress_callback=progress_callback,
         spy_df=spy_df,
         vixy_df=vixy_df,
@@ -280,9 +298,9 @@ def run_short_training(
     best_params = None
     if tune:
         log.info("Running Optuna hyperparameter search (50 trials)…")
-        best_params = tune_short_hyperparams(X, y, weights=weights, n_trials=50)
+        best_params = tune_short_hyperparams(X, y, weights=weights, n_trials=50, forward_bars=forward_bars)
 
-    bst, meta = train_short_model(X, y, weights=weights, params=best_params)
+    bst, meta = train_short_model(X, y, weights=weights, params=best_params, forward_bars=forward_bars)
 
     # Add training metadata
     meta["model_type"] = "short"
@@ -291,6 +309,7 @@ def run_short_training(
     meta["label_params"] = {
         "forward_bars": forward_bars,
         "min_drop_pct": min_drop_pct,
+        "atr_multiplier": atr_multiplier,
     }
     meta["recency_weighting"] = {
         "enabled": config.ML_RECENCY_WEIGHT_ENABLED,

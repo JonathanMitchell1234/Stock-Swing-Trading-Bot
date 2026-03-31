@@ -148,6 +148,7 @@ def build_dataset(
     data: Dict[str, pd.DataFrame],
     forward_bars: int = 5,
     min_gain_pct: float = 0.03,
+    atr_multiplier: float = 0.0,
     progress_callback=None,
     spy_df: Optional[pd.DataFrame] = None,
     vixy_df: Optional[pd.DataFrame] = None,
@@ -184,6 +185,7 @@ def build_dataset(
             df, valid_idx,
             forward_bars=forward_bars,
             min_gain_pct=min_gain_pct,
+            atr_multiplier=atr_multiplier,
         )
 
         all_X.append(X)
@@ -202,6 +204,14 @@ def build_dataset(
     X_out = np.vstack(all_X)
     y_out = np.concatenate(all_y)
     all_dates_combined = pd.DatetimeIndex(np.concatenate([d.values for d in all_dates]))
+
+    # Sort everything chronologically so TimeSeriesSplit splits by date,
+    # not by symbol order (fixes data-leak where folds mixed time periods).
+    sort_idx = np.argsort(all_dates_combined)
+    X_out = X_out[sort_idx]
+    y_out = y_out[sort_idx]
+    all_dates_combined = all_dates_combined[sort_idx]
+    all_syms = [all_syms[i] for i in sort_idx]
 
     # Compute per-sample recency weights
     if config.ML_RECENCY_WEIGHT_ENABLED:
@@ -235,6 +245,7 @@ def train_model(
     weights: Optional[np.ndarray] = None,
     params: Optional[dict] = None,
     n_splits: int = 5,
+    forward_bars: int = 5,
 ) -> Tuple["lgb.Booster", dict]:
     """
     Train a LightGBM binary classifier using TimeSeriesSplit CV.
@@ -256,10 +267,10 @@ def train_model(
     if weights is None:
         weights = np.ones(len(y), dtype=np.float32)
 
-    # ── Compute scale_pos_weight from actual class balance ───
+    # ── Compute global scale_pos_weight (used for final model only) ───
     n_pos = int(y.sum())
     n_neg = int(len(y) - n_pos)
-    spw = n_neg / n_pos if n_pos > 0 else 1.0
+    global_spw = n_neg / n_pos if n_pos > 0 else 1.0
 
     default_params = {
         "objective": "binary",
@@ -274,7 +285,7 @@ def train_model(
         "reg_alpha": 0.1,
         "reg_lambda": 1.0,
         "min_child_samples": 50,
-        "scale_pos_weight": spw,   # penalise missing the minority (winners)
+        "scale_pos_weight": global_spw,  # overridden per-fold during CV
         "verbose": -1,
         "random_state": 42,
         "feature_pre_filter": False,
@@ -291,10 +302,16 @@ def train_model(
     # LightGBM's "use a Dataset" warning and repeats the expensive binning
     # step for every fold.  Building it once with free_raw_data=False keeps
     # the raw arrays alive so fold subsets can reference the same bin edges.
+    #
+    # NOTE: feature_pre_filter must be set via params at construction time
+    # and then removed from fold/final params so LightGBM does not raise
+    # "Cannot change feature_pre_filter after constructed Dataset handle."
+    construction_params = {"feature_pre_filter": default_params.pop("feature_pre_filter", False)}
     ds_full_ref = lgb.Dataset(
         X, label=y, weight=weights,
         feature_name=FEATURE_NAMES,
         free_raw_data=False,
+        params=construction_params,
     ).construct()
 
     # ── Time-series CV ───────────────────────────────────────
@@ -304,7 +321,7 @@ def train_model(
     log.info("Training LightGBM with %d samples, %d features, %d CV folds",
              len(X), X.shape[1], n_splits)
     log.info("Class balance: %.1f%% positive (%d / %d), scale_pos_weight=%.2f",
-             100 * y.mean(), y.sum(), len(y), spw)
+             100 * y.mean(), y.sum(), len(y), global_spw)
     recency_on = config.ML_RECENCY_WEIGHT_ENABLED and not np.all(weights == 1.0)
     if recency_on:
         log.info(
@@ -313,9 +330,22 @@ def train_model(
         )
 
     for fold, (train_idx, val_idx) in enumerate(tscv.split(X)):
+        # Purged CV: drop the first `forward_bars` rows from the validation
+        # set so training labels that look forward into the validation
+        # period are eliminated (avoids overlapping-label leakage).
+        if forward_bars > 0 and len(val_idx) > forward_bars:
+            val_idx = val_idx[forward_bars:]
+
         X_tr, X_val = X[train_idx], X[val_idx]
         y_tr, y_val = y[train_idx], y[val_idx]
         w_tr = weights[train_idx]
+
+        # Per-fold scale_pos_weight so we only use train-split class balance
+        fold_n_pos = int(y_tr.sum())
+        fold_n_neg = int(len(y_tr) - fold_n_pos)
+        fold_spw = fold_n_neg / fold_n_pos if fold_n_pos > 0 else 1.0
+        fold_params = dict(default_params)
+        fold_params["scale_pos_weight"] = fold_spw
 
         # Build fold datasets from numpy arrays but reference the pre-built
         # full dataset so LightGBM reuses bin thresholds instead of re-binning.
@@ -338,7 +368,7 @@ def train_model(
         ]
 
         bst = lgb.train(
-            default_params,
+            fold_params,
             ds_train,
             num_boost_round=n_estimators,
             valid_sets=[ds_val_fold],
@@ -430,6 +460,7 @@ def tune_hyperparams(
     weights: Optional[np.ndarray] = None,
     n_trials: int = 50,
     n_splits: int = 3,
+    forward_bars: int = 5,
 ) -> dict:
     """
     Run Optuna to find the best LightGBM hyperparameters.
@@ -446,11 +477,6 @@ def tune_hyperparams(
     if weights is None:
         weights = np.ones(len(y), dtype=np.float32)
 
-    # Compute scale_pos_weight for imbalance handling
-    n_pos = int(y.sum())
-    n_neg = int(len(y) - n_pos)
-    spw = n_neg / n_pos if n_pos > 0 else 1.0
-
     def objective(trial: optuna.Trial) -> float:
         params = {
             "objective": "binary",
@@ -464,7 +490,6 @@ def tune_hyperparams(
             "reg_alpha": trial.suggest_float("reg_alpha", 1e-3, 10.0, log=True),
             "reg_lambda": trial.suggest_float("reg_lambda", 1e-3, 10.0, log=True),
             "min_child_samples": trial.suggest_int("min_child_samples", 10, 100),
-            "scale_pos_weight": spw,
             "verbose": -1,
             "feature_pre_filter": False,
         }
@@ -473,7 +498,18 @@ def tune_hyperparams(
         aucs = []
 
         for train_idx, val_idx in tscv.split(X):
+            # Purged CV: skip first forward_bars validation rows
+            if forward_bars > 0 and len(val_idx) > forward_bars:
+                val_idx = val_idx[forward_bars:]
+
+            y_tr = y[train_idx]
             w_tr = weights[train_idx]
+
+            # Per-fold scale_pos_weight (train split only)
+            fold_n_pos = int(y_tr.sum())
+            fold_n_neg = int(len(y_tr) - fold_n_pos)
+            params["scale_pos_weight"] = fold_n_neg / fold_n_pos if fold_n_pos > 0 else 1.0
+
             ds_tr  = lgb.Dataset(X[train_idx], label=y[train_idx], weight=w_tr, feature_name=FEATURE_NAMES)
             ds_val = lgb.Dataset(X[val_idx],   label=y[val_idx],   reference=ds_tr)
 
@@ -525,6 +561,7 @@ def run_training(
     tune: bool = False,
     forward_bars: int = 5,
     min_gain_pct: float = 0.03,
+    atr_multiplier: float = 0.0,
     progress_callback=None,
 ) -> dict:
     """
@@ -543,8 +580,12 @@ def run_training(
 
     log.info("=" * 60)
     log.info("ML TRAINING START — %d symbols, %d months history", len(symbols), months)
-    log.info("Label: ≥%.1f%% gain within %d bars",
-             min_gain_pct * 100, forward_bars)
+    if atr_multiplier > 0:
+        log.info("Label: ATR-based target (%.1f× ATR-14) within %d bars",
+                 atr_multiplier, forward_bars)
+    else:
+        log.info("Label: ≥%.1f%% gain within %d bars",
+                 min_gain_pct * 100, forward_bars)
     if config.ML_RECENCY_WEIGHT_ENABLED:
         log.info(
             "Recency weighting: ENABLED  halflife=%d days  min_weight=%.2f",
@@ -594,6 +635,7 @@ def run_training(
         data,
         forward_bars=forward_bars,
         min_gain_pct=min_gain_pct,
+        atr_multiplier=atr_multiplier,
         progress_callback=progress_callback,
         spy_df=spy_df,
         vixy_df=vixy_df,
@@ -610,9 +652,9 @@ def run_training(
     best_params = None
     if tune:
         log.info("Running Optuna hyperparameter search (50 trials)…")
-        best_params = tune_hyperparams(X, y, weights=weights, n_trials=50)
+        best_params = tune_hyperparams(X, y, weights=weights, n_trials=50, forward_bars=forward_bars)
 
-    bst, meta = train_model(X, y, weights=weights, params=best_params)
+    bst, meta = train_model(X, y, weights=weights, params=best_params, forward_bars=forward_bars)
 
     # Add training metadata
     meta["symbols"] = sorted(data.keys())
@@ -620,6 +662,7 @@ def run_training(
     meta["label_params"] = {
         "forward_bars": forward_bars,
         "min_gain_pct": min_gain_pct,
+        "atr_multiplier": atr_multiplier,
     }
     meta["recency_weighting"] = {
         "enabled": config.ML_RECENCY_WEIGHT_ENABLED,
@@ -667,6 +710,8 @@ def main():
                         help="Forward bars for label generation (default: 5)")
     parser.add_argument("--min-gain-pct", type=float, default=0.03,
                         help="Minimum gain %% for positive label (default: 0.03 = 3%%)")
+    parser.add_argument("--atr-multiplier", type=float, default=0.0,
+                        help="ATR multiplier for volatility-adjusted labels (default: 0 = use static %%)")
     args = parser.parse_args()
 
     run_training(
@@ -675,6 +720,7 @@ def main():
         tune=args.tune,
         forward_bars=args.forward_bars,
         min_gain_pct=args.min_gain_pct,
+        atr_multiplier=args.atr_multiplier,
     )
 
 

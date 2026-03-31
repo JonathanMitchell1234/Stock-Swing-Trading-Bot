@@ -34,6 +34,29 @@ class TradeExecutor:
         self._rebuild_sector_counts()
         self.journal = TradeJournal()
 
+    def _poll_fill_price(self, order, timeout_secs: float = 5.0) -> float | None:
+        """Poll an order for its filled_avg_price (market orders fill fast)."""
+        if order is None:
+            return None
+        import time
+        deadline = time.monotonic() + timeout_secs
+        order_id = getattr(order, "id", None)
+        if not order_id:
+            return None
+        while time.monotonic() < deadline:
+            try:
+                refreshed = self.broker.api.get_order(order_id)
+                status = getattr(refreshed, "status", "")
+                fp = float(getattr(refreshed, "filled_avg_price", 0) or 0)
+                if fp > 0:
+                    return fp
+                if status in ("filled", "canceled", "expired", "rejected"):
+                    return fp if fp > 0 else None
+            except Exception:
+                pass
+            time.sleep(0.5)
+        return None
+
     def _init_risk_manager(self) -> None:
         equity = self.broker.get_equity()
         n_positions = len(self.broker.get_positions())
@@ -95,7 +118,8 @@ class TradeExecutor:
                 ema50_ago = spy_df.iloc[-(config.EMA_SLOPE_PERIOD + 1)].get("ema_trend", None)
                 if ema50_ago is not None:
                     if spy_close > spy_ema50 and spy_ema50 > ema50_ago:
-                        return base - 1  # strong market: lower bar
+                        adj = getattr(config, "DYNAMIC_THRESHOLD_ADJUSTMENT", 1)
+                        return base - adj  # strong market: lower bar
         except Exception as exc:
             log.warning("Dynamic threshold check failed: %s", exc)
         return base
@@ -105,26 +129,29 @@ class TradeExecutor:
     # ─────────────────────────────────────────────────────────
     def _detect_regime(self) -> tuple:
         """
-        Robustly detect bull vs bear market regime.
+        Detect bull vs bear (vs chop) market regime.
 
         Returns (bear_market: bool, spy_df: DataFrame | None).
 
-        Detection logic:
-          1. Fetch SPY daily bars (up to 250).
-          2. If we get >= 200 bars, use EMA-200 as the regime line.
-          3. If we get 50-199 bars, fall back to EMA-50 (degraded but still useful).
-          4. If we get < 50 bars, log a warning and default to BULL
-             (safe — avoids opening shorts when we can't confirm the regime).
+        Detection layers (in priority order):
+          1. HMM regime model (fast probabilistic detection) — if trained and enabled
+          2. EMA-200 fallback (classic lagging indicator)
+          3. EMA-50 degraded fallback
+          4. Default to BULL if insufficient data
 
-        A bear market is declared when SPY closes below the chosen EMA.
+        The HMM also detects a "CHOP" regime which is stored on the instance
+        as self._hmm_chop so the entry scanner can reduce position sizing.
         """
         bear_market = False
         spy_df = None
+        self._hmm_regime = None    # raw HMM result dict
+        self._hmm_chop = False     # True when HMM detects chop regime
 
         if not config.MARKET_REGIME_ENABLED:
             log.debug("Market regime filter disabled — defaulting to bull mode")
             return bear_market, spy_df
 
+        # Fetch SPY bars (needed by both HMM and EMA fallback)
         try:
             spy_df = self.broker.get_bars(config.MARKET_REGIME_SYMBOL, limit=250)
         except Exception as exc:
@@ -143,6 +170,67 @@ class TradeExecutor:
             )
             return bear_market, spy_df
 
+        # ── Layer 1: HMM regime detection ────────────────────
+        hmm_decided = False
+        if getattr(config, "HMM_REGIME_ENABLED", False):
+            try:
+                from hmm_model import predict_regime, is_available as hmm_available
+
+                if hmm_available():
+                    hmm_result = predict_regime(
+                        spy_df,
+                        lookback=getattr(config, "HMM_LOOKBACK", 30),
+                    )
+                    if hmm_result is not None:
+                        self._hmm_regime = hmm_result
+                        probs = hmm_result["probabilities"]
+                        state = hmm_result["state"]
+
+                        bear_prob = probs.get("BEAR", 0.0)
+                        chop_prob = probs.get("CHOP", 0.0)
+                        bull_prob = probs.get("BULL", 0.0)
+
+                        bear_thresh = getattr(config, "HMM_BEAR_THRESHOLD", 0.60)
+                        chop_thresh = getattr(config, "HMM_CHOP_THRESHOLD", 0.50)
+
+                        if bear_prob >= bear_thresh:
+                            bear_market = True
+                            hmm_decided = True
+                            log.info(
+                                "REGIME [HMM]: BEAR — P(BEAR)=%.2f  P(CHOP)=%.2f  P(BULL)=%.2f  "
+                                "(threshold=%.2f)",
+                                bear_prob, chop_prob, bull_prob, bear_thresh,
+                            )
+                        elif chop_prob >= chop_thresh:
+                            self._hmm_chop = True
+                            hmm_decided = True
+                            log.info(
+                                "REGIME [HMM]: CHOP — P(CHOP)=%.2f  P(BEAR)=%.2f  P(BULL)=%.2f  "
+                                "(threshold=%.2f). Reducing position sizes.",
+                                chop_prob, bear_prob, bull_prob, chop_thresh,
+                            )
+                        else:
+                            hmm_decided = True
+                            log.info(
+                                "REGIME [HMM]: BULL — P(BULL)=%.2f  P(BEAR)=%.2f  P(CHOP)=%.2f",
+                                bull_prob, bear_prob, chop_prob,
+                            )
+
+                        if hmm_decided:
+                            # Still compute indicators on spy_df for downstream use
+                            try:
+                                spy_df = compute_all(spy_df)
+                            except Exception:
+                                pass
+                            return bear_market, spy_df
+                else:
+                    log.debug("HMM model not available — falling back to EMA regime detection")
+            except ImportError:
+                log.debug("hmmlearn not installed — falling back to EMA regime detection")
+            except Exception as exc:
+                log.warning("HMM regime detection failed: %s — falling back to EMA", exc)
+
+        # ── Layer 2: EMA-based regime detection (fallback) ───
         try:
             spy_df = compute_all(spy_df)
         except Exception as exc:
@@ -174,12 +262,12 @@ class TradeExecutor:
                 if spy_close < spy_ema200:
                     bear_market = True
                     log.info(
-                        "REGIME: BEAR — %s close $%.2f < EMA-200 $%.2f  (bars=%d)",
+                        "REGIME [EMA]: BEAR — %s close $%.2f < EMA-200 $%.2f  (bars=%d)",
                         config.MARKET_REGIME_SYMBOL, spy_close, spy_ema200, len(spy_df),
                     )
                 else:
                     log.info(
-                        "REGIME: BULL — %s close $%.2f >= EMA-200 $%.2f  (bars=%d)",
+                        "REGIME [EMA]: BULL — %s close $%.2f >= EMA-200 $%.2f  (bars=%d)",
                         config.MARKET_REGIME_SYMBOL, spy_close, spy_ema200, len(spy_df),
                     )
                 return bear_market, spy_df
@@ -190,13 +278,13 @@ class TradeExecutor:
             if spy_close < spy_ema50:
                 bear_market = True
                 log.warning(
-                    "REGIME: BEAR (degraded) — %s close $%.2f < EMA-50 $%.2f  "
+                    "REGIME [EMA]: BEAR (degraded) — %s close $%.2f < EMA-50 $%.2f  "
                     "(only %d bars; EMA-200 unavailable — using EMA-50 fallback)",
                     config.MARKET_REGIME_SYMBOL, spy_close, spy_ema50, len(spy_df),
                 )
             else:
                 log.info(
-                    "REGIME: BULL (degraded) — %s close $%.2f >= EMA-50 $%.2f  "
+                    "REGIME [EMA]: BULL (degraded) — %s close $%.2f >= EMA-50 $%.2f  "
                     "(only %d bars; EMA-200 unavailable — using EMA-50 fallback)",
                     config.MARKET_REGIME_SYMBOL, spy_close, spy_ema50, len(spy_df),
                 )
@@ -282,26 +370,60 @@ class TradeExecutor:
                         log.info("Position %s already closed (stop filled?) – skipping", symbol)
                         closed += 1
                         self.pdt.record_sell(symbol)
+                        # Record the stop-loss/TP exit in the journal so it
+                        # shows up without requiring a manual backfill.
+                        try:
+                            fill_price = current_price
+                            intended_stop = current_price  # fallback
+                            side_needed = "buy" if is_short else "sell"
+                            recent_orders = self.broker.api.list_orders(
+                                status="closed", symbols=[symbol], limit=10, direction="desc"
+                            )
+                            for _ro in recent_orders:
+                                if _ro.side == side_needed and getattr(_ro, "filled_at", None):
+                                    _fp = float(getattr(_ro, "filled_avg_price", 0) or 0)
+                                    if _fp > 0:
+                                        fill_price = _fp
+                                        # Get intended stop price for slippage calc
+                                        _sp = float(getattr(_ro, "stop_price", 0) or 0)
+                                        if _sp > 0:
+                                            intended_stop = _sp
+                                        break
+                            _sl_pnl = (entry_price - fill_price) * abs_qty if is_short else (fill_price - entry_price) * abs_qty
+                            self.journal.record_exit(
+                                symbol,
+                                exit_price=intended_stop,
+                                pnl=round(_sl_pnl, 4),
+                                hold_days=hold_days,
+                                exit_reason="stop_loss",
+                                filled_price=fill_price,
+                            )
+                        except Exception as _exc:
+                            log.warning("Could not record stop-loss exit for %s in journal: %s", symbol, _exc)
                         continue
                     abs_qty = abs(float(fresh_pos.qty))
 
                     if is_short:
-                        self.broker.submit_market_cover(symbol, abs_qty)
+                        _exit_order = self.broker.submit_market_cover(symbol, abs_qty)
                     else:
-                        self.broker.submit_market_sell(symbol, abs_qty)
+                        _exit_order = self.broker.submit_market_sell(symbol, abs_qty)
                     self.pdt.record_sell(symbol)
                     closed += 1
-                    # Journal exit
+                    # Journal exit — poll for actual fill price for slippage tracking
+                    _filled_price = self._poll_fill_price(_exit_order)
                     if is_short:
-                        trade_pnl = (entry_price - current_price) * abs_qty
+                        actual_exit = _filled_price or current_price
+                        trade_pnl = (entry_price - actual_exit) * abs_qty
                     else:
-                        trade_pnl = (current_price - entry_price) * abs_qty
+                        actual_exit = _filled_price or current_price
+                        trade_pnl = (actual_exit - entry_price) * abs_qty
                     self.journal.record_exit(
                         symbol,
                         exit_price=current_price,
                         pnl=trade_pnl,
                         hold_days=hold_days,
                         exit_reason=", ".join(signal.get("reasons", [])),
+                        filled_price=_filled_price if _filled_price else current_price,
                     )
                 except Exception as exc:
                     log.error("%s order failed for %s: %s",
@@ -438,7 +560,7 @@ class TradeExecutor:
                     from zoneinfo import ZoneInfo
                     eastern = ZoneInfo("America/New_York")
                     now_et = clock.timestamp.astimezone(eastern)
-                    market_open_today = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
+                    market_open_today = now_et.replace(hour=9, minute=15, second=0, microsecond=0)
                     minutes_since_open = (now_et - market_open_today).total_seconds() / 60
                     if minutes_since_open < config.MARKET_OPEN_DELAY_MINUTES:
                         remaining = config.MARKET_OPEN_DELAY_MINUTES - minutes_since_open
@@ -529,6 +651,14 @@ class TradeExecutor:
 
         # Advanced features: vol regime + dynamic threshold
         vol_scale = self._get_vol_regime_scale()
+
+        # HMM chop regime: reduce position sizing when market is choppy
+        if getattr(self, "_hmm_chop", False):
+            chop_scale = getattr(config, "HMM_CHOP_SIZE_SCALE", 0.65)
+            vol_scale *= chop_scale
+            log.info("HMM CHOP regime active — sizing scale reduced by %.0f%% (combined vol_scale=%.2f)",
+                     (1 - chop_scale) * 100, vol_scale)
+
         dyn_threshold = self._get_dynamic_threshold(spy_df)
 
         if dyn_threshold != config.ENTRY_SCORE_THRESHOLD:

@@ -64,6 +64,7 @@ def build_inverse_dataset(
     data: Dict[str, pd.DataFrame],
     forward_bars: int = 5,
     min_gain_pct: float = 0.03,
+    atr_multiplier: float = 0.0,
     progress_callback=None,
     spy_df: Optional[pd.DataFrame] = None,
     vixy_df: Optional[pd.DataFrame] = None,
@@ -97,6 +98,7 @@ def build_inverse_dataset(
             df, valid_idx,
             forward_bars=forward_bars,
             min_gain_pct=min_gain_pct,
+            atr_multiplier=atr_multiplier,
         )
 
         all_X.append(X)
@@ -116,16 +118,26 @@ def build_inverse_dataset(
     y_out = np.concatenate(all_y)
     all_dates_combined = pd.DatetimeIndex(np.concatenate([d.values for d in all_dates]))
 
+    # Sort everything chronologically so TimeSeriesSplit splits by date,
+    # not by symbol order (fixes data-leak where folds mixed time periods).
+    sort_idx = np.argsort(all_dates_combined)
+    X_out = X_out[sort_idx]
+    y_out = y_out[sort_idx]
+    all_dates_combined = all_dates_combined[sort_idx]
+    all_syms = [all_syms[i] for i in sort_idx]
+
     if config.ML_RECENCY_WEIGHT_ENABLED:
+        _inverse_halflife = getattr(config, "ML_INVERSE_RECENCY_HALFLIFE_DAYS",
+                                    config.ML_RECENCY_HALFLIFE_DAYS)
         weights = compute_recency_weights(
             all_dates_combined,
-            halflife_days=config.ML_RECENCY_HALFLIFE_DAYS,
+            halflife_days=_inverse_halflife,
             min_weight=config.ML_RECENCY_MIN_WEIGHT,
         )
         log.info(
             "Recency weights: halflife=%d days, min=%.2f, "
             "weight range [%.3f, %.3f] (mean=%.3f)",
-            config.ML_RECENCY_HALFLIFE_DAYS,
+            _inverse_halflife,
             config.ML_RECENCY_MIN_WEIGHT,
             float(weights.min()),
             float(weights.max()),
@@ -147,13 +159,14 @@ def train_inverse_model(
     weights: Optional[np.ndarray] = None,
     params: Optional[dict] = None,
     n_splits: int = 5,
+    forward_bars: int = 5,
 ) -> Tuple:
     """
     Train a LightGBM binary classifier for INVERSE ETF entry prediction.
     Uses the same training logic as the long model.
     """
     from ml_trainer import train_model
-    return train_model(X, y, weights=weights, params=params, n_splits=n_splits)
+    return train_model(X, y, weights=weights, params=params, n_splits=n_splits, forward_bars=forward_bars)
 
 
 # ═════════════════════════════════════════════════════════════
@@ -166,10 +179,11 @@ def tune_inverse_hyperparams(
     weights: Optional[np.ndarray] = None,
     n_trials: int = 50,
     n_splits: int = 3,
+    forward_bars: int = 5,
 ) -> dict:
     """Run Optuna to find the best LightGBM hyperparameters for INVERSE model."""
     from ml_trainer import tune_hyperparams
-    return tune_hyperparams(X, y, weights=weights, n_trials=n_trials, n_splits=n_splits)
+    return tune_hyperparams(X, y, weights=weights, n_trials=n_trials, n_splits=n_splits, forward_bars=forward_bars)
 
 
 # ═════════════════════════════════════════════════════════════
@@ -200,6 +214,7 @@ def run_inverse_training(
     tune: bool = False,
     forward_bars: int = 5,
     min_gain_pct: float = 0.03,
+    atr_multiplier: float = 0.0,
     progress_callback=None,
 ) -> dict:
     """
@@ -228,12 +243,16 @@ def run_inverse_training(
     log.info("INVERSE ETF ML TRAINING START — %d symbols, %d months history",
              len(symbols), months)
     log.info("Symbols: %s", ", ".join(symbols))
-    log.info("Label: ≥%.1f%% GAIN within %d bars (buying inverse ETFs long)",
-             min_gain_pct * 100, forward_bars)
+    if atr_multiplier > 0:
+        log.info("Label: ATR-based target (%.1f× ATR-14) GAIN within %d bars",
+                 atr_multiplier, forward_bars)
+    else:
+        log.info("Label: ≥%.1f%% GAIN within %d bars (buying inverse ETFs long)",
+                 min_gain_pct * 100, forward_bars)
     if config.ML_RECENCY_WEIGHT_ENABLED:
         log.info(
             "Recency weighting: ENABLED  halflife=%d days  min_weight=%.2f",
-            config.ML_RECENCY_HALFLIFE_DAYS,
+            getattr(config, "ML_INVERSE_RECENCY_HALFLIFE_DAYS", config.ML_RECENCY_HALFLIFE_DAYS),
             config.ML_RECENCY_MIN_WEIGHT,
         )
     else:
@@ -272,6 +291,7 @@ def run_inverse_training(
         data,
         forward_bars=forward_bars,
         min_gain_pct=min_gain_pct,
+        atr_multiplier=atr_multiplier,
         progress_callback=progress_callback,
         spy_df=spy_df,
         vixy_df=vixy_df,
@@ -291,9 +311,9 @@ def run_inverse_training(
     best_params = None
     if tune:
         log.info("Running Optuna hyperparameter search (50 trials)…")
-        best_params = tune_inverse_hyperparams(X, y, weights=weights, n_trials=50)
+        best_params = tune_inverse_hyperparams(X, y, weights=weights, n_trials=50, forward_bars=forward_bars)
 
-    bst, meta = train_inverse_model(X, y, weights=weights, params=best_params)
+    bst, meta = train_inverse_model(X, y, weights=weights, params=best_params, forward_bars=forward_bars)
 
     # Add training metadata
     meta["model_type"] = "inverse"
@@ -302,10 +322,12 @@ def run_inverse_training(
     meta["label_params"] = {
         "forward_bars": forward_bars,
         "min_gain_pct": min_gain_pct,
+        "atr_multiplier": atr_multiplier,
     }
     meta["recency_weighting"] = {
         "enabled": config.ML_RECENCY_WEIGHT_ENABLED,
-        "halflife_days": config.ML_RECENCY_HALFLIFE_DAYS if config.ML_RECENCY_WEIGHT_ENABLED else None,
+        "halflife_days": getattr(config, "ML_INVERSE_RECENCY_HALFLIFE_DAYS",
+                                  config.ML_RECENCY_HALFLIFE_DAYS) if config.ML_RECENCY_WEIGHT_ENABLED else None,
         "min_weight": config.ML_RECENCY_MIN_WEIGHT if config.ML_RECENCY_WEIGHT_ENABLED else None,
         "weight_min": round(float(weights.min()), 4),
         "weight_max": round(float(weights.max()), 4),

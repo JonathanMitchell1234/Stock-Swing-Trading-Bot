@@ -56,16 +56,8 @@ class FinBERTSentiment:
             if use_cuda and not cuda_available:
                 log.warning("NLP_DEVICE='cuda' requested but CUDA is unavailable. Falling back to CPU.")
                 use_cuda = False
+
             device = 0 if use_cuda else -1
-
-            # Temporary fix for CVE-2025-32434 weights_only restriction in torch when using transformers + torch < 2.6
-            try:
-                # We can inform transformers not to use weights_only by importing weights_only = False
-                # Or bypass the restrict by environment variable before transformers imports torch
-                os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
-            except Exception:
-                pass
-
             pipeline_kwargs = {
                 "task": "sentiment-analysis",
                 "model": "ProsusAI/finbert",
@@ -105,9 +97,7 @@ class FinBERTSentiment:
             return 0.0
             
         try:
-            # We pass the articles together in a single batch list but also use the torch.utils.data.Dataset internally
-            # or pass the batch_size to eliminate sequential processing warnings
-            results = self.pipeline(headlines, batch_size=len(headlines))
+            results = self.pipeline(headlines)
         except Exception as e:
             log.error("FinBERT model evaluation failed: %s", e)
             return 0.0

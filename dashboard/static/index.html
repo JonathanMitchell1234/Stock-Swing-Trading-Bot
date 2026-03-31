@@ -392,6 +392,47 @@
 				color: var(--yellow);
 				border: 1px solid #d2992240;
 			}
+			.regime-badge.chop {
+				background: #261d38;
+				color: var(--purple);
+				border: 1px solid #bc8cff40;
+			}
+
+			/* ── HMM probability bars ────────────────────────────── */
+			.prob-row {
+				display: flex;
+				align-items: center;
+				gap: 8px;
+				margin-top: 5px;
+			}
+			.prob-row .prob-label {
+				font-size: 10px;
+				font-weight: 600;
+				color: var(--muted);
+				text-transform: uppercase;
+				width: 34px;
+				flex-shrink: 0;
+			}
+			.prob-row .prob-track {
+				flex: 1;
+				height: 6px;
+				background: var(--surface);
+				border-radius: 3px;
+				overflow: hidden;
+				border: 1px solid var(--border);
+			}
+			.prob-row .prob-fill {
+				height: 100%;
+				border-radius: 3px;
+				transition: width 0.5s ease;
+			}
+			.prob-row .prob-pct {
+				font-size: 11px;
+				font-weight: 700;
+				width: 38px;
+				text-align: right;
+				flex-shrink: 0;
+			}
 
 			/* ── VIX bar ─────────────────────────────────────────── */
 			.vix-bar-wrap {
@@ -1492,22 +1533,37 @@
 				</div>
 				<div class="card-body">
 					<div class="regime-grid" id="regime-grid">
+						<!-- HMM state badge -->
 						<div class="regime-item">
-							<div class="label">Market</div>
+							<div class="label">HMM Regime</div>
 							<div class="value" id="regime-label"><span class="spinner"></span></div>
+							<div style="margin-top:6px;font-size:10px;color:var(--muted)" id="regime-source"></div>
 						</div>
+						<!-- SPY close -->
 						<div class="regime-item">
 							<div class="label">SPY Close</div>
 							<div class="value" id="regime-spy">—</div>
 						</div>
-						<div class="regime-item">
-							<div class="label">SMA-200</div>
-							<div class="value" id="regime-sma">—</div>
+						<!-- Probability bars -->
+						<div class="regime-item" style="grid-column: span 2">
+							<div class="label" style="margin-bottom:8px">State Probabilities</div>
+							<div class="prob-row">
+								<span class="prob-label">BULL</span>
+								<div class="prob-track"><div class="prob-fill" id="prob-bar-bull" style="width:0%;background:var(--green)"></div></div>
+								<span class="prob-pct pos" id="prob-pct-bull">—</span>
+							</div>
+							<div class="prob-row">
+								<span class="prob-label">CHOP</span>
+								<div class="prob-track"><div class="prob-fill" id="prob-bar-chop" style="width:0%;background:var(--purple)"></div></div>
+								<span class="prob-pct" style="color:var(--purple)" id="prob-pct-chop">—</span>
+							</div>
+							<div class="prob-row">
+								<span class="prob-label">BEAR</span>
+								<div class="prob-track"><div class="prob-fill" id="prob-bar-bear" style="width:0%;background:var(--red)"></div></div>
+								<span class="prob-pct neg" id="prob-pct-bear">—</span>
+							</div>
 						</div>
-						<div class="regime-item">
-							<div class="label">Distance</div>
-							<div class="value" id="regime-dist">—</div>
-						</div>
+						<!-- VIXY -->
 						<div class="regime-item">
 							<div class="label">VIXY Level</div>
 							<div class="value" id="regime-vixy">—</div>
@@ -1518,6 +1574,7 @@
 								<span id="vix-bar-label" style="font-size: 10px; color: var(--muted); white-space: nowrap"></span>
 							</div>
 						</div>
+						<!-- Entry status -->
 						<div class="regime-item">
 							<div class="label">Entries</div>
 							<div class="value" id="regime-entries">—</div>
@@ -1701,24 +1758,25 @@
 						<button class="refresh-btn" onclick="loadJournal()">↻ Refresh</button>
 					</div>
 				</div>
-				<div class="card-body" style="padding:0; overflow-x:auto">
-					<table class="data-table">
+				<div class="card-body" style="padding:0">
+					<div style="overflow:auto; max-height:340px">
+					<table class="data-table" style="min-width:1000px">
 						<thead>
 							<tr>
-								<th>Symbol</th>
-								<th>Side</th>
-								<th>Entry Date</th>
-								<th>Exit Date</th>
-								<th>Entry $</th>
-								<th>Exit $</th>
-								<th>P&amp;L</th>
-								<th>P&amp;L %</th>
-								<th>Hold Days</th>
-								<th>Score</th>
-								<th>ML Prob</th>
-								<th>Order</th>
-								<th>Exit Reason</th>
-								<th>Signal Factors</th>
+								<th style="position:sticky;top:0;background:var(--surface2);z-index:1">Symbol</th>
+								<th style="position:sticky;top:0;background:var(--surface2);z-index:1">Side</th>
+								<th style="position:sticky;top:0;background:var(--surface2);z-index:1">Entry Date</th>
+								<th style="position:sticky;top:0;background:var(--surface2);z-index:1">Exit Date</th>
+								<th style="position:sticky;top:0;background:var(--surface2);z-index:1">Entry $</th>
+								<th style="position:sticky;top:0;background:var(--surface2);z-index:1">Exit $</th>
+								<th style="position:sticky;top:0;background:var(--surface2);z-index:1">P&amp;L</th>
+								<th style="position:sticky;top:0;background:var(--surface2);z-index:1">P&amp;L %</th>
+								<th style="position:sticky;top:0;background:var(--surface2);z-index:1">Hold Days</th>
+								<th style="position:sticky;top:0;background:var(--surface2);z-index:1">Score</th>
+								<th style="position:sticky;top:0;background:var(--surface2);z-index:1">ML Prob</th>
+								<th style="position:sticky;top:0;background:var(--surface2);z-index:1">Order</th>
+								<th style="position:sticky;top:0;background:var(--surface2);z-index:1">Exit Reason</th>
+								<th style="position:sticky;top:0;background:var(--surface2);z-index:1">Signal Factors</th>
 							</tr>
 						</thead>
 						<tbody id="journal-tbody">
@@ -1727,6 +1785,7 @@
 							</tr>
 						</tbody>
 					</table>
+					</div>
 				</div>
 			</div>
 
@@ -1807,6 +1866,7 @@
 						<button class="tab-btn" data-tab="cfg-risk">Risk</button>
 						<button class="tab-btn" data-tab="cfg-regime">Regime &amp; VIX</button>
 						<button class="tab-btn" data-tab="cfg-universe">Universe</button>
+						<button class="tab-btn" data-tab="cfg-ml">Machine Learning</button>
 					</div>
 
 					<!-- Tab: Indicators -->
@@ -2146,6 +2206,48 @@
 						</div>
 					</div>
 
+					<!-- Tab: Machine Learning -->
+					<div class="tab-panel" id="cfg-ml">
+						<div class="cfg-grid">
+							<div class="cfg-section-title">Long Entry Model</div>
+							<div class="cfg-row">
+								<label class="cfg-label">ML Enabled<span class="cfg-hint">Enable GBM model gate/replace for entries</span></label
+								><select class="cfg-input" data-key="ML_ENABLED">
+									<option value="true">Enabled</option>
+									<option value="false">Disabled (score-only)</option>
+								</select>
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Blend Mode<span class="cfg-hint">&quot;gate&quot;: score+ML must both pass &nbsp;|&nbsp; &quot;replace&quot;: ML probability only</span></label
+								><select class="cfg-input" data-key="ML_BLEND_MODE">
+									<option value="gate">gate (score + ML)</option>
+									<option value="replace">replace (ML only)</option>
+								</select>
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">ML Entry Threshold<span class="cfg-hint">Min GBM probability to enter (0–1). Raise to be more selective.</span></label
+								><input type="number" class="cfg-input" data-key="ML_ENTRY_THRESHOLD" min="0.1" max="0.95" step="0.05" />
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">ML Min Score (gate)<span class="cfg-hint">Min hand-crafted score before consulting ML (gate mode only)</span></label
+								><input type="number" class="cfg-input" data-key="ML_MIN_SCORE" min="1" max="12" step="1" />
+							</div>
+							<div class="cfg-section-title">Training Settings</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Training Months<span class="cfg-hint">Months of history used to train the ML model</span></label
+								><input type="number" class="cfg-input" data-key="ML_TRAINING_MONTHS" min="3" max="60" step="1" />
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Forward Bars<span class="cfg-hint">Bars ahead used to generate the training label</span></label
+								><input type="number" class="cfg-input" data-key="ML_FORWARD_BARS" min="1" max="20" step="1" />
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Min Gain % (label)<span class="cfg-hint">Label=1 if close ≥ entry × (1 + this) within forward bars</span></label
+								><input type="number" class="cfg-input" data-key="ML_MIN_GAIN_PCT" min="0.005" max="0.20" step="0.005" />
+							</div>
+						</div>
+					</div>
+
 					<!-- Tab: Universe -->
 					<div class="tab-panel" id="cfg-universe">
 						<div class="cfg-grid">
@@ -2453,8 +2555,7 @@
 									<button class="tab-btn" data-bttab="bt-cfg-risk">Risk</button>
 									<button class="tab-btn" data-bttab="bt-cfg-regime">Regime &amp; VIX</button>
 									<button class="tab-btn" data-bttab="bt-cfg-universe">Universe</button>
-								</div>
-
+								<button class="tab-btn" data-bttab="bt-cfg-ml">Machine Learning</button>
 								<!-- Tab: Indicators -->
 								<div class="tab-panel active" id="bt-cfg-indicators">
 									<div class="cfg-grid">
@@ -2823,6 +2924,49 @@
 											</div>
 										</div>
 
+									</div>
+
+									<!-- BT Tab: Machine Learning -->
+									<div class="tab-panel" id="bt-cfg-ml">
+										<div class="cfg-grid">
+											<div class="cfg-section-title">Long Entry Model</div>
+											<div class="cfg-row">
+												<label class="cfg-label">ML Enabled<span class="cfg-hint">Enable GBM model gate/replace for entries</span></label
+												><select class="bt-cfg-input" data-btkey="ML_ENABLED">
+													<option value="true">Enabled</option>
+													<option value="false">Disabled (score-only)</option>
+												</select>
+											</div>
+											<div class="cfg-row">
+												<label class="cfg-label">Blend Mode<span class="cfg-hint">&quot;gate&quot;: score+ML must both pass &nbsp;|&nbsp; &quot;replace&quot;: ML probability only</span></label
+												><select class="bt-cfg-input" data-btkey="ML_BLEND_MODE">
+													<option value="gate">gate (score + ML)</option>
+													<option value="replace">replace (ML only)</option>
+												</select>
+											</div>
+											<div class="cfg-row">
+												<label class="cfg-label">ML Entry Threshold<span class="cfg-hint">Min GBM probability to enter (0–1). Raise to be more selective.</span></label
+												><input type="number" class="bt-cfg-input" data-btkey="ML_ENTRY_THRESHOLD" min="0.1" max="0.95" step="0.05" />
+											</div>
+											<div class="cfg-row">
+												<label class="cfg-label">ML Min Score (gate)<span class="cfg-hint">Min hand-crafted score before consulting ML (gate mode only)</span></label
+												><input type="number" class="bt-cfg-input" data-btkey="ML_MIN_SCORE" min="1" max="12" step="1" />
+											</div>
+											<div class="cfg-section-title">Training Settings</div>
+											<div class="cfg-row">
+												<label class="cfg-label">Training Months<span class="cfg-hint">Months of history used to train the ML model</span></label
+												><input type="number" class="bt-cfg-input" data-btkey="ML_TRAINING_MONTHS" min="3" max="60" step="1" />
+											</div>
+											<div class="cfg-row">
+												<label class="cfg-label">Forward Bars<span class="cfg-hint">Bars ahead used to generate the training label</span></label
+												><input type="number" class="bt-cfg-input" data-btkey="ML_FORWARD_BARS" min="1" max="20" step="1" />
+											</div>
+											<div class="cfg-row">
+												<label class="cfg-label">Min Gain % (label)<span class="cfg-hint">Label=1 if close ≥ entry × (1 + this) within forward bars</span></label
+												><input type="number" class="bt-cfg-input" data-btkey="ML_MIN_GAIN_PCT" min="0.005" max="0.20" step="0.005" />
+											</div>
+										</div>
+									</div>
 
 								<!-- Save bar -->
 								<div style="padding: 12px 20px 8px; border-top: 1px solid var(--border); display: flex; gap: 10px; align-items: center; margin-top: 8px">
@@ -3098,23 +3242,34 @@
 				try {
 					const d = await apiFetch("/api/regime");
 
-					// Regime badge
-					const badge = d.bull_market ? `<span class="regime-badge bull">▲ BULL</span>` : `<span class="regime-badge bear">▼ BEAR</span>`;
-					setInner("regime-label", badge);
+					// ── HMM state badge ──────────────────────────────────
+					const stateClass = { BULL: "bull", BEAR: "bear", CHOP: "chop" }[d.hmm_state] ?? "warn";
+					const stateIcon  = { BULL: "▲", BEAR: "▼", CHOP: "⇄" }[d.hmm_state] ?? "?";
+					setInner("regime-label", `<span class="regime-badge ${stateClass}">${stateIcon} ${d.hmm_state ?? "—"}</span>`);
+					setInner("regime-source", d.hmm_source === "HMM" ? "via Hidden Markov Model" : "via EMA-200 fallback");
 
+					// SPY close
 					setInner("regime-spy", `$${fmtN(d.spy_close)}`);
-					setInner("regime-sma", `$${fmtN(d.sma_200)}`);
 
-					const distClass = d.sma_pct_diff >= 0 ? "pos" : "neg";
-					setInner("regime-dist", `<span class="${distClass}">${fmtPct(d.sma_pct_diff)}</span>`);
+					// ── Probability bars ─────────────────────────────────
+					const probs = d.hmm_probabilities ?? {};
+					const pBull = (probs.BULL ?? 0) * 100;
+					const pChop = (probs.CHOP ?? 0) * 100;
+					const pBear = (probs.BEAR ?? 0) * 100;
 
-					// VIXY
+					$("prob-bar-bull").style.width = pBull.toFixed(1) + "%";
+					$("prob-bar-chop").style.width = pChop.toFixed(1) + "%";
+					$("prob-bar-bear").style.width = pBear.toFixed(1) + "%";
+					setInner("prob-pct-bull", pBull > 0 ? pBull.toFixed(1) + "%" : "—");
+					setInner("prob-pct-chop", pChop > 0 ? pChop.toFixed(1) + "%" : "—");
+					setInner("prob-pct-bear", pBear > 0 ? pBear.toFixed(1) + "%" : "—");
+
+					// ── VIXY ─────────────────────────────────────────────
 					if (d.vixy_level != null) {
 						const vixClass = d.long_halted ? "neg" : d.vix_reduced ? "warn" : "pos";
 						setInner("regime-vixy", `<span class="${vixClass}">${fmtN(d.vixy_level)}</span>`);
 
-						// VIX bar — fill relative to halt threshold (max = 2× halt threshold for scale)
-						const maxVix = d.vix_halt_threshold * 1.5;
+						const maxVix  = d.vix_halt_threshold * 1.5;
 						const fillPct = Math.min(100, (d.vixy_level / maxVix) * 100);
 						const barColor = d.long_halted ? "var(--red)" : d.vix_reduced ? "var(--yellow)" : "var(--green)";
 						$("vix-bar").style.width = fillPct + "%";
@@ -3128,12 +3283,15 @@
 						setInner("regime-vixy", '<span class="muted">N/A</span>');
 					}
 
-					// Entry status
+					// ── Entry status ──────────────────────────────────────
 					let entryHtml;
 					if (d.long_halted) {
 						entryHtml = `<span class="regime-badge bear">🛑 Halted</span>`;
-					} else if (!d.bull_market && d.inverse_mode_enabled) {
+					} else if (d.hmm_state === "BEAR" && d.inverse_mode_enabled) {
 						entryHtml = `<span class="regime-badge warn">⚠ Inverse ETFs</span>`;
+					} else if (d.chop_active) {
+						const scalePct = Math.round((d.chop_size_scale ?? 0.65) * 100);
+						entryHtml = `<span class="regime-badge chop">⇄ ${scalePct}% size</span>`;
 					} else if (d.vix_reduced) {
 						entryHtml = `<span class="regime-badge warn">⚡ Half size</span>`;
 					} else {
@@ -3362,11 +3520,19 @@
 			}
 
 			/* ── Trade Journal ───────────────────────────────────────── */
+			let _journalAutoBackfillDone = false;
 			async function loadJournal() {
 				const tbody = $("journal-tbody");
 				try {
 					const trades = await apiFetch("/api/journal?limit=100");
 					if (!trades.length) {
+						if (!_journalAutoBackfillDone) {
+							_journalAutoBackfillDone = true;
+							tbody.innerHTML = '<tr><td colspan="14" style="text-align:center;color:var(--muted);padding:24px"><span class="spinner"></span> Syncing from Alpaca…</td></tr>';
+							try { await fetch("/api/journal/backfill?days=90", { method: "POST" }); } catch(_) {}
+							await loadJournal();
+							return;
+						}
 						tbody.innerHTML = '<tr><td colspan="14" style="text-align:center;color:var(--muted);padding:24px">No closed trades yet.</td></tr>';
 						return;
 					}

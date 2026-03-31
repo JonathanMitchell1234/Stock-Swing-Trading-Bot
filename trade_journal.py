@@ -120,14 +120,14 @@ class TradeJournal:
     ) -> None:
         """
         Update the most recent open trade row for *symbol* with exit info.
-        If filled_price is provided, slippage_bps is computed against the
-        original requested_price.
+        If filled_price is provided, slippage_bps is computed as the
+        deviation of the actual fill from the intended exit price.
         """
         now = dt.datetime.now(dt.timezone.utc).isoformat()
         conn = _connect()
         try:
             row = conn.execute(
-                "SELECT id, requested_price, entry_price FROM trades "
+                "SELECT id, entry_price FROM trades "
                 "WHERE symbol=? AND exit_time IS NULL "
                 "ORDER BY id DESC LIMIT 1",
                 (symbol,),
@@ -136,10 +136,10 @@ class TradeJournal:
                 return
 
             row_id = row["id"]
-            req_price = row["requested_price"] or row["entry_price"]
+            # Slippage = deviation of actual fill from the intended exit price
             slippage_bps: float | None = None
-            if filled_price is not None and req_price:
-                slippage_bps = round(abs(filled_price - req_price) / req_price * 10_000, 2)
+            if filled_price is not None and exit_price and exit_price > 0:
+                slippage_bps = round(abs(filled_price - exit_price) / exit_price * 10_000, 2)
 
             entry_price = row["entry_price"] or exit_price
             pnl_pct = round(pnl / max(abs(entry_price), 0.0001) * 100, 4) if entry_price else None
@@ -180,14 +180,25 @@ class TradeJournal:
         qty: float,
         pnl: float,
         hold_days: int,
+        slippage_bps: float | None = 0.0,
     ) -> bool:
         """
-        Insert a historical (backfilled) closed trade.
-        Skips silently if a trade with the same symbol + entry_time already exists.
-        Returns True if a new row was inserted.
+        Insert or complete a historical (backfilled) closed trade.
+
+        Strategy:
+        1. If an exact (symbol + entry_time) row already exists, skip.
+        2. If an open (exit_time IS NULL) row exists for the same symbol on
+           the same calendar day, complete it with exit data — this preserves
+           all entry-level fields such as ml_prob and signal_score.
+        3. Otherwise insert a new backfilled row.
+
+        Returns True if a row was inserted or updated.
         """
         conn = _connect()
         try:
+            # 1. Exact-match dedup (already backfilled from Alpaca)
+            #    Also check same symbol + same calendar-day entry to catch
+            #    duplicate backfills with slightly different timestamps.
             existing = conn.execute(
                 "SELECT id FROM trades WHERE symbol=? AND entry_time=?",
                 (symbol, entry_time),
@@ -195,19 +206,63 @@ class TradeJournal:
             if existing:
                 return False
 
+            entry_date_prefix = entry_time[:10] + "%"
+            same_day_closed = conn.execute(
+                "SELECT id FROM trades WHERE symbol=? AND entry_time LIKE ? "
+                "AND exit_time IS NOT NULL ORDER BY id DESC LIMIT 1",
+                (symbol, entry_date_prefix),
+            ).fetchone()
+            if same_day_closed:
+                return False  # already have a closed trade for this symbol on this day
+
             pnl_pct = round(pnl / max(abs(entry_price * qty), 1e-9) * 100, 4) if entry_price and qty else None
+
+            # 2. Try to complete an existing open entry recorded by the live bot
+            #    on the same calendar day (entry_time[:10] == date prefix).
+            entry_date_prefix = entry_time[:10] + "%"
+            open_row = conn.execute(
+                "SELECT id FROM trades WHERE symbol=? AND exit_time IS NULL "
+                "AND entry_time LIKE ? ORDER BY id DESC LIMIT 1",
+                (symbol, entry_date_prefix),
+            ).fetchone()
+            if open_row:
+                conn.execute(
+                    """
+                    UPDATE trades SET
+                        exit_time    = ?,
+                        exit_price   = ?,
+                        filled_price = COALESCE(filled_price, ?),
+                        slippage_bps = COALESCE(slippage_bps, ?),
+                        pnl          = ?,
+                        pnl_pct      = ?,
+                        hold_days    = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        exit_time, exit_price,
+                        exit_price,  # filled_price fallback
+                        slippage_bps,
+                        round(pnl, 4), pnl_pct, int(hold_days),
+                        open_row["id"],
+                    ),
+                )
+                conn.commit()
+                return True
+
+            # 3. No matching open entry — insert a brand-new backfilled row.
             conn.execute(
                 """
                 INSERT INTO trades
                     (symbol, side, entry_time, exit_time,
-                     entry_price, exit_price, qty,
-                     pnl, pnl_pct, hold_days, order_type)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                     entry_price, exit_price, filled_price, qty,
+                     pnl, pnl_pct, hold_days, order_type, slippage_bps)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     symbol, side, entry_time, exit_time,
-                    entry_price, exit_price, qty,
+                    entry_price, exit_price, exit_price, qty,
                     round(pnl, 4), pnl_pct, int(hold_days), "market",
+                    slippage_bps,
                 ),
             )
             conn.commit()

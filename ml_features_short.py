@@ -108,21 +108,25 @@ def generate_short_labels(
     indices: list[int],
     forward_bars: int = 5,
     min_drop_pct: float = 0.03,
+    atr_multiplier: float = 0.0,
     **_kwargs,
 ) -> np.ndarray:
     """
     Generate binary labels for SHORT training.
 
-    Target: "Does the closing price DROP ≥ *min_drop_pct* below the
-    entry price within *forward_bars* bars?"
+    When *atr_multiplier* > 0 the target is volatility-adjusted:
+        target = entry_price - atr_multiplier × ATR-14
+    Otherwise it falls back to the static percentage:
+        target = entry_price × (1 - min_drop_pct)
 
     Entry is assumed at the NEXT bar's open (short sell).
       - label = 1 if any close in [entry_bar .. entry_bar+forward_bars]
-                  is ≤ entry_price × (1 - min_drop_pct)
+                  hits the target
       - label = 0 otherwise
     """
     labels = np.zeros(len(indices), dtype=np.int32)
     n = len(df)
+    use_atr = atr_multiplier > 0 and "atr" in df.columns
 
     for i, bar_idx in enumerate(indices):
         entry_bar = bar_idx + 1  # enter on next bar's open
@@ -133,7 +137,13 @@ def generate_short_labels(
         if pd.isna(entry_price) or entry_price <= 0:
             continue
 
-        target = entry_price * (1.0 - min_drop_pct)
+        if use_atr:
+            atr_val = df.iloc[bar_idx].get("atr")
+            if pd.isna(atr_val) or atr_val <= 0:
+                atr_val = entry_price * min_drop_pct  # fallback
+            target = entry_price - atr_multiplier * atr_val
+        else:
+            target = entry_price * (1.0 - min_drop_pct)
 
         # Walk forward — did any close drop to our profit target?
         end = min(entry_bar + forward_bars, n)

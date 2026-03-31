@@ -599,6 +599,27 @@ class AlpacaBroker:
         self.api.cancel_all_orders()
         log.info("All open orders cancelled")
 
+    def cancel_orders_for_symbol(self, symbol: str) -> int:
+        """
+        Cancel all open orders for a single symbol and return the count cancelled.
+
+        Must be called before submitting a sell/cover when an existing open order
+        may already have the shares locked (Alpaca tracks qty vs available_qty
+        separately — locked shares show as qty > 0 but available = 0, causing
+        'insufficient qty available' rejections).
+        """
+        orders = self.get_open_orders(symbol=symbol)
+        cancelled = 0
+        for o in orders:
+            try:
+                self.api.cancel_order(o.id)
+                log.info("Cancelled order %s for %s (side=%s qty=%s)",
+                         o.id, symbol, o.side, o.qty)
+                cancelled += 1
+            except Exception as exc:
+                log.warning("Failed to cancel order %s for %s: %s", o.id, symbol, exc)
+        return cancelled
+
     def get_open_orders(self, symbol: Optional[str] = None) -> list:
         orders = self.api.list_orders(status="open")
         if symbol:

@@ -119,6 +119,20 @@ LOW_VOL_THRESHOLD = 0.12        # annualized vol below 12% = low vol
 HIGH_VOL_SIZE_SCALE = 0.80      # reduce position to 80% in high vol
 LOW_VOL_SIZE_SCALE = 1.15       # increase position to 115% in low vol
 
+# ── HMM Regime Detection (Hidden Markov Model) ────────────
+# A 3-state Gaussian HMM trained on [log_return, volatility] features
+# from SPY daily data.  Detects Bull/Bear/Chop regimes far faster than
+# lagging EMA crossovers by modelling the probability of hidden states.
+# Train with:  python hmm_trainer.py
+HMM_REGIME_ENABLED = True           # use HMM for regime detection (falls back to EMA if unavailable)
+HMM_BEAR_THRESHOLD = 0.60           # if P(BEAR) >= this → declare bear market
+HMM_CHOP_THRESHOLD = 0.50           # if P(CHOP) >= this → declare choppy (reduces sizing)
+HMM_CHOP_SIZE_SCALE = 0.65          # position size scale in chop regime
+HMM_LOOKBACK = 30                   # days of recent data to feed into HMM prediction
+HMM_TRAINING_MONTHS = 36            # months of SPY history for training
+HMM_N_STATES = 3                    # hidden states (2=bull/bear, 3=bull/bear/chop)
+HMM_VOL_WINDOW = 5                  # rolling window for realised volatility feature (short = sharper signal)
+
 # ── VIX-based fear filter ─────────────────────────────────
 # Uses VIXY (VIX proxy ETF) since Alpaca does not carry ^VIX directly.
 # VIXY tracks short-term VIX futures and is a reliable fear gauge.
@@ -330,21 +344,25 @@ CHECK_EXITS_MINUTES = 15      # check exit signals every N minutes
 # Machine Learning (GBM entry model)
 # ─────────────────────────────────────────────
 ML_ENABLED = True              # set True after training a model
-ML_ENTRY_THRESHOLD = 0.40       # minimum GBM probability to enter (0-1)
+ML_ENTRY_THRESHOLD = 0.55       # minimum GBM probability to enter (0-1)
 ML_MIN_SCORE = 3                # minimum hand-crafted score before consulting GBM
 ML_BLEND_MODE = "gate"          # "gate" = both score+ML must pass; "replace" = ML only
 ML_FORWARD_BARS = 5             # forward bars for label generation
 ML_MIN_GAIN_PCT = 0.03          # label = 1 if close ≥ entry × (1 + this) within forward bars
+ML_LABEL_ATR_MULTIPLIER = 1.5   # if > 0, use ATR-based target instead of static % (0 = disabled)
 ML_TRAINING_MONTHS = 24         # months of history to use for training
 
 # ── Recency weighting: give more importance to recent data ──
 # Rows are up-weighted exponentially as they approach today.
 # The half-life controls how fast the weight decays into the past:
-#   e.g. 90 days → a bar from 90 days ago gets half the weight of today's bar.
+#   e.g. 365 days → a bar from 1 year ago gets half the weight of today's bar.
 # Set ML_RECENCY_WEIGHT_ENABLED = False to revert to uniform weights.
 ML_RECENCY_WEIGHT_ENABLED = True
-ML_RECENCY_HALFLIFE_DAYS   = 90   # half-life in calendar days
+ML_RECENCY_HALFLIFE_DAYS   = 365  # half-life in calendar days (long model needs bull+bear memory)
 ML_RECENCY_MIN_WEIGHT      = 0.10  # floor: old bars never drop below this fraction of max weight
+
+# Inverse ETF model uses a shorter half-life to stay focused on recent bear mechanics
+ML_INVERSE_RECENCY_HALFLIFE_DAYS = 90   # 90 days keeps inverse model hyper-focused on recent tape
 
 # ── Short GBM model (separate model for bear-mode shorts) ───
 # Set ML_SHORT_ENABLED = True after training with: python ml_trainer_short.py

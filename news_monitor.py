@@ -33,8 +33,17 @@ log = get_logger("news_monitor")
 # Alpaca news stream endpoint (same URL for paper + live — data tier is separate)
 _WS_URL = "wss://stream.data.alpaca.markets/v1beta1/news"
 
-_RECONNECT_BASE_DELAY = 5.0    # seconds before first reconnect attempt
-_RECONNECT_MAX_DELAY  = 120.0  # exponential-backoff ceiling
+_RECONNECT_BASE_DELAY     = 5.0    # seconds before first reconnect attempt
+_RECONNECT_MAX_DELAY      = 120.0  # exponential-backoff ceiling
+# When Alpaca returns 406 (connection-limit exceeded) the stale server-side
+# session usually expires within 60-90 s.  Use a longer initial delay so we
+# don't hammer the endpoint before it has a chance to clean up.
+_RECONNECT_406_DELAY      = 60.0   # initial wait after a 406 rejection
+_RECONNECT_406_MAX_DELAY  = 300.0  # 406-specific backoff ceiling
+
+
+class _ConnectionLimitError(RuntimeError):
+    """Raised when Alpaca rejects the subscription with code 406."""
 
 
 class NewsMonitor:
@@ -120,11 +129,25 @@ class NewsMonitor:
 
     async def _stream_with_reconnect(self) -> None:
         """Outer reconnect loop — re-establishes the stream after any failure."""
-        delay = _RECONNECT_BASE_DELAY
+        delay     = _RECONNECT_BASE_DELAY
+        delay_406 = _RECONNECT_406_DELAY
         while not self._stop_event.is_set():
             try:
                 await self._connect_and_stream()
-                delay = _RECONNECT_BASE_DELAY  # reset on clean disconnect
+                delay     = _RECONNECT_BASE_DELAY   # reset on clean disconnect
+                delay_406 = _RECONNECT_406_DELAY
+            except _ConnectionLimitError as exc:
+                if self._stop_event.is_set():
+                    break
+                # 406: a previous session is still lingering on Alpaca's server.
+                # Back off long enough for it to expire rather than hammering.
+                log.warning(
+                    "News stream disconnected (%s) — "
+                    "waiting %.0fs for stale session to expire before reconnecting",
+                    exc, delay_406,
+                )
+                await asyncio.sleep(delay_406)
+                delay_406 = min(delay_406 * 1.5, _RECONNECT_406_MAX_DELAY)
             except Exception as exc:
                 if self._stop_event.is_set():
                     break
@@ -165,6 +188,24 @@ class NewsMonitor:
             # 2. Subscribe to all news (we filter down to open positions in the handler)
             await ws.send(json.dumps({"action": "subscribe", "news": ["*"]}))
             sub_resp = json.loads(await asyncio.wait_for(ws.recv(), timeout=15.0))
+
+            # Check for a server-side error in the subscription acknowledgment
+            # (e.g. code 406 = connection limit exceeded when another instance is
+            # already connected on a different machine with the same API key).
+            errors = [m for m in (sub_resp if isinstance(sub_resp, list) else [sub_resp])
+                      if m.get("T") == "error"]
+            if errors:
+                err = errors[0]
+                code = err.get("code")
+                msg  = err.get("msg")
+                if code == 406:
+                    raise _ConnectionLimitError(
+                        f"subscription rejected — code={code} msg={msg}"
+                    )
+                raise RuntimeError(
+                    f"subscription rejected — code={code} msg={msg}"
+                )
+
             log.info("News stream live  sub_ack=%s", sub_resp)
 
             # 3. Message loop
@@ -262,6 +303,18 @@ class NewsMonitor:
 
             qty = float(pos.qty)
             abs_qty = abs(qty)
+
+            # Cancel any open orders for this symbol BEFORE submitting the
+            # ejection sell.  Alpaca locks shares against pending orders, so
+            # pos.qty may be 0.038 while available=0 — submitting a sell
+            # without cancelling first produces:
+            #   "insufficient qty available (requested: X, available: 0)"
+            cancelled = self._broker.cancel_orders_for_symbol(symbol)
+            if cancelled:
+                log.warning(
+                    "Ejection: cancelled %d open order(s) for %s to free locked shares",
+                    cancelled, symbol,
+                )
 
             if qty > 0:
                 # Long position — market sell

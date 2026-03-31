@@ -262,33 +262,68 @@ async def get_clock():
 @app.get("/api/regime")
 async def get_regime():
     """
-    Market regime: SPY vs SMA-200, VIXY level, bear mode flag.
+    Market regime: HMM state + probabilities (falls back to EMA-200), VIXY level.
     """
     try:
-        from indicators import compute_all
+        import datetime as _dt
         import pandas as pd
         api = _get_api()
 
-        # SPY regime — need 250 daily bars for SMA-200; use start date not limit
-        import datetime as _dt
+        # Fetch SPY bars (needed by both HMM and EMA fallback)
         spy_start = (_dt.date.today() - _dt.timedelta(days=380)).isoformat()
         bars = api.get_bars("SPY", config.BAR_TIMEFRAME,
                             start=spy_start, limit=10_000,
                             feed=config.DATA_FEED)
         spy_df = _bars_to_df(bars, "SPY")
-        spy_df = compute_all(spy_df)
+        spy_close = round(_safe_float(spy_df.iloc[-1]["close"]), 2)
 
-        row       = spy_df.iloc[-1]
-        spy_close = _safe_float(row["close"])
-        sma_200   = _safe_float(row.get("sma_200", 0))
-        ema_200   = _safe_float(row.get("ema_200", 0))
-        ema_50    = _safe_float(row.get("ema_trend", 0))
-        # Use EMA-200 for regime detection (matches executor.py logic)
-        regime_ema = ema_200 if ema_200 > 0 else sma_200
-        bull_market  = spy_close > regime_ema if regime_ema > 0 else True
-        sma_pct_diff = ((spy_close - regime_ema) / regime_ema * 100) if regime_ema else 0
+        # ── Layer 1: HMM regime detection ────────────────────────
+        hmm_state        = None
+        hmm_probabilities: dict = {}
+        hmm_source       = "EMA"   # will be updated to "HMM" on success
+        chop_active      = False
 
-        # VIXY level
+        if getattr(config, "HMM_REGIME_ENABLED", False):
+            try:
+                from hmm_model import predict_regime, is_available as hmm_available
+                if hmm_available():
+                    result = predict_regime(
+                        spy_df,
+                        lookback=getattr(config, "HMM_LOOKBACK", 30),
+                    )
+                    if result is not None:
+                        hmm_state        = result["state"]
+                        hmm_probabilities = result["probabilities"]
+                        hmm_source       = "HMM"
+                        bear_thresh = getattr(config, "HMM_BEAR_THRESHOLD", 0.60)
+                        chop_thresh = getattr(config, "HMM_CHOP_THRESHOLD", 0.50)
+                        bear_prob   = hmm_probabilities.get("BEAR", 0.0)
+                        chop_prob   = hmm_probabilities.get("CHOP", 0.0)
+                        chop_active = (
+                            hmm_state == "CHOP" and chop_prob >= chop_thresh
+                            and bear_prob < bear_thresh
+                        )
+            except Exception:
+                pass
+
+        # ── Layer 2: EMA-200 fallback ─────────────────────────────
+        ema_200 = 0.0
+        ema_50  = 0.0
+        sma_pct_diff = 0.0
+        if hmm_source == "EMA":
+            from indicators import compute_all
+            spy_df = compute_all(spy_df)
+            row     = spy_df.iloc[-1]
+            sma_200 = _safe_float(row.get("sma_200", 0))
+            ema_200 = _safe_float(row.get("ema_200", 0))
+            ema_50  = _safe_float(row.get("ema_trend", 0))
+            regime_ema   = ema_200 if ema_200 > 0 else sma_200
+            sma_pct_diff = ((spy_close - regime_ema) / regime_ema * 100) if regime_ema else 0
+            hmm_state = "BULL" if spy_close >= regime_ema else "BEAR"
+
+        bull_market = hmm_state not in ("BEAR",)
+
+        # ── VIXY / VIX filter ─────────────────────────────────────
         vixy_level  = None
         long_halted = False
         vix_reduced = False
@@ -306,26 +341,25 @@ async def get_regime():
                 pass
 
         return {
-            "bull_market":    bull_market,
-            "regime_label":   "BULL" if bull_market else "BEAR",
-            "spy_close":      round(spy_close, 2),
-            "sma_200":        round(sma_200, 2),
-            "ema_200":        round(ema_200, 2),
-            "ema_50":         round(ema_50, 2),
-            "sma_pct_diff":   round(sma_pct_diff, 2),
-            "vixy_level":     vixy_level,
-            "long_halted":    long_halted,
-            "vix_reduced":    vix_reduced,
+            # HMM fields
+            "hmm_state":          hmm_state,
+            "hmm_probabilities":  hmm_probabilities,
+            "hmm_source":         hmm_source,
+            "chop_active":        chop_active,
+            "chop_size_scale":    getattr(config, "HMM_CHOP_SIZE_SCALE", 0.65),
+            # Legacy / entry status
+            "bull_market":        bull_market,
+            "spy_close":          spy_close,
+            "ema_200":            round(ema_200, 2),
+            "sma_pct_diff":       round(sma_pct_diff, 2),
+            "vixy_level":         vixy_level,
+            "long_halted":        long_halted,
+            "vix_reduced":        vix_reduced,
             "vix_halt_threshold":   config.VIX_HALT_THRESHOLD,
             "vix_reduce_threshold": config.VIX_REDUCE_THRESHOLD,
             "inverse_mode_enabled": config.INVERSE_ETF_MODE_ENABLED,
             "bear_short_mode_enabled": getattr(config, "BEAR_SHORT_MODE_ENABLED", False),
-            "short_min_equity": getattr(config, "SHORT_MIN_EQUITY", 2000.0),
-            "bear_mode_note": (
-                "Equity < $%.0f: inverse ETFs mode" % getattr(config, "SHORT_MIN_EQUITY", 2000.0)
-                if not bull_market
-                else "Bull market — normal long mode"
-            ),
+            "short_min_equity":     getattr(config, "SHORT_MIN_EQUITY", 2000.0),
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -708,7 +742,8 @@ _CONFIG_EDITABLE_KEYS = {
     # Machine Learning
     "ML_ENABLED", "ML_ENTRY_THRESHOLD", "ML_MIN_SCORE",
     "ML_BLEND_MODE", "ML_FORWARD_BARS",
-    "ML_MIN_GAIN_PCT", "ML_TRAINING_MONTHS",
+    "ML_MIN_GAIN_PCT", "ML_LABEL_ATR_MULTIPLIER", "ML_TRAINING_MONTHS",
+    "ML_RECENCY_HALFLIFE_DAYS", "ML_RECENCY_MIN_WEIGHT", "ML_RECENCY_WEIGHT_ENABLED",
     # NLP Sentiment & Ejection Shield
     "NLP_SENTIMENT_ENABLED", "NLP_MIN_SENTIMENT", "NLP_NEWS_LIMIT_PER_SYMBOL",
     "NLP_NEWS_EJECTION_ENABLED", "NLP_EJECTION_THRESHOLD", "NLP_EJECTION_COOLDOWN_SECS",
@@ -1135,6 +1170,7 @@ def _ml_train_background(req: MLTrainRequest) -> None:
             months=req.months or config.ML_TRAINING_MONTHS,
             forward_bars=req.forward_bars or config.ML_FORWARD_BARS,
             min_gain_pct=req.min_gain_pct or config.ML_MIN_GAIN_PCT,
+            atr_multiplier=getattr(config, "ML_LABEL_ATR_MULTIPLIER", 0.0),
         )
 
         # Reload model in the inference cache

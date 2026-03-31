@@ -85,6 +85,7 @@ def generate_inverse_labels(
     indices: list[int],
     forward_bars: int = 5,
     min_gain_pct: float = 0.03,
+    atr_multiplier: float = 0.0,
     **_kwargs,
 ) -> np.ndarray:
     """
@@ -97,4 +98,5 @@ def generate_inverse_labels(
     buying inverse ETFs long — price going UP is the success condition.
     """
     return generate_labels(df, indices, forward_bars=forward_bars,
-                           min_gain_pct=min_gain_pct)
+                           min_gain_pct=min_gain_pct,
+                           atr_multiplier=atr_multiplier)
