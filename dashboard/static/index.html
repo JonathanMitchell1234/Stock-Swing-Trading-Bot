@@ -536,6 +536,60 @@
 				display: block;
 			}
 
+			.chart-canvas {
+				width: 100%;
+				height: 220px;
+				display: block;
+			}
+
+			.diag-note-grid {
+				display: grid;
+				grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+				gap: 12px;
+				margin-top: 20px;
+			}
+
+			.diag-note {
+				background: var(--surface2);
+				border: 1px solid var(--border);
+				border-left: 3px solid var(--blue);
+				border-radius: var(--radius);
+				padding: 12px 14px;
+				font-size: 12px;
+				line-height: 1.55;
+				color: var(--text);
+			}
+
+			.diag-subtitle {
+				font-size: 11px;
+				font-weight: 600;
+				color: var(--muted);
+				text-transform: uppercase;
+				letter-spacing: 0.4px;
+				margin-bottom: 8px;
+			}
+
+			.tri-col {
+				display: grid;
+				grid-template-columns: repeat(3, minmax(0, 1fr));
+				gap: 24px;
+			}
+
+			.tri-col > div {
+				min-width: 0;
+			}
+
+			.diag-table-wrap {
+				overflow-x: auto;
+				max-width: 100%;
+			}
+
+			@media (max-width: 1100px) {
+				.tri-col {
+					grid-template-columns: 1fr;
+				}
+			}
+
 			/* ── Log viewer ──────────────────────────────────────── */
 			.log-box {
 				background: #0d1117;
@@ -1529,7 +1583,10 @@
 			<div class="card">
 				<div class="card-header">
 					<span class="card-title">Market Regime</span>
-					<button class="refresh-btn" onclick="loadRegime()">↻ Refresh</button>
+					<div style="display:flex;gap:6px;align-items:center">
+						<button class="refresh-btn" id="hmm-reload-btn" onclick="reloadHmm()" title="Reload HMM model from disk after retraining">⟳ Reload HMM</button>
+						<button class="refresh-btn" onclick="loadRegime()">↻ Refresh</button>
+					</div>
 				</div>
 				<div class="card-body">
 					<div class="regime-grid" id="regime-grid">
@@ -1832,7 +1889,121 @@
 				</div>
 			</div>
 
-			<!-- Row 8: Log viewer ─────────────────────────────────── -->
+			<!-- Row 8: Trade Diagnostics ───────────────────────────── -->
+			<div class="card">
+				<div class="card-header">
+					<span class="card-title">📈 Trade Diagnostics</span>
+					<button class="refresh-btn" onclick="loadTradeDiagnostics()">↻ Refresh</button>
+				</div>
+				<div class="card-body">
+					<div class="stat-grid">
+						<div class="stat-card">
+							<div class="stat-label">Expectancy / Trade</div>
+							<div class="stat-value" id="diag-expectancy">—</div>
+							<div class="stat-sub" id="diag-expectancy-sub">Realised average per closed trade</div>
+						</div>
+						<div class="stat-card">
+							<div class="stat-label">Median Return</div>
+							<div class="stat-value" id="diag-median-return">—</div>
+							<div class="stat-sub">Median closed-trade P&amp;L %</div>
+						</div>
+						<div class="stat-card">
+							<div class="stat-label">Payoff Ratio</div>
+							<div class="stat-value" id="diag-payoff-ratio">—</div>
+							<div class="stat-sub">Average win divided by average loss</div>
+						</div>
+						<div class="stat-card">
+							<div class="stat-label">Best Win Streak</div>
+							<div class="stat-value" id="diag-best-streak">—</div>
+							<div class="stat-sub">Consecutive winning exits</div>
+						</div>
+						<div class="stat-card">
+							<div class="stat-label">Worst Loss Streak</div>
+							<div class="stat-value" id="diag-worst-streak">—</div>
+							<div class="stat-sub">Consecutive losing or flat exits</div>
+						</div>
+						<div class="stat-card">
+							<div class="stat-label">Top-5 Profit Share</div>
+							<div class="stat-value" id="diag-profit-share">—</div>
+							<div class="stat-sub">How much gross profit comes from the top 5 winners</div>
+						</div>
+					</div>
+
+					<div class="diag-note-grid" id="diag-note-grid">
+						<div class="diag-note"><span class="spinner"></span> Loading journal diagnostics…</div>
+					</div>
+
+					<div class="two-col" style="margin-top:20px">
+						<div>
+							<div class="diag-subtitle">Realised P&amp;L By Closed Trade</div>
+							<canvas id="diag-pnl-canvas" class="chart-canvas"></canvas>
+						</div>
+						<div>
+							<div class="diag-subtitle">Trade Return Distribution</div>
+							<canvas id="diag-dist-canvas" class="chart-canvas"></canvas>
+						</div>
+					</div>
+
+					<div class="tri-col" style="margin-top:20px">
+						<div>
+							<div class="diag-subtitle">Entry Score Buckets</div>
+							<div class="diag-table-wrap">
+								<table class="data-table">
+									<thead>
+										<tr>
+											<th>Bucket</th>
+											<th class="num">Trades</th>
+											<th class="num">Win %</th>
+											<th class="num">Avg %</th>
+										</tr>
+									</thead>
+									<tbody id="diag-score-tbody">
+										<tr class="loading-row"><td colspan="4"><span class="spinner"></span> Loading…</td></tr>
+									</tbody>
+								</table>
+							</div>
+						</div>
+						<div>
+							<div class="diag-subtitle">Exit Reason Breakdown</div>
+							<div class="diag-table-wrap">
+								<table class="data-table">
+									<thead>
+										<tr>
+											<th>Reason</th>
+											<th class="num">Trades</th>
+											<th class="num">Win %</th>
+											<th class="num">Total</th>
+										</tr>
+									</thead>
+									<tbody id="diag-exit-tbody">
+										<tr class="loading-row"><td colspan="4"><span class="spinner"></span> Loading…</td></tr>
+									</tbody>
+								</table>
+							</div>
+						</div>
+						<div>
+							<div class="diag-subtitle">Entry Weekday Edge</div>
+							<div class="diag-table-wrap">
+								<table class="data-table">
+									<thead>
+										<tr>
+											<th>Day</th>
+											<th class="num">Trades</th>
+											<th class="num">Win %</th>
+											<th class="num">Avg $</th>
+										</tr>
+									</thead>
+									<tbody id="diag-weekday-tbody">
+										<tr class="loading-row"><td colspan="4"><span class="spinner"></span> Loading…</td></tr>
+									</tbody>
+								</table>
+							</div>
+						</div>
+					</div>
+				</div>
+			</div>
+
+			<!-- Row 9: Log viewer ─────────────────────────────────── -->
 			<div class="card">
 				<div class="card-header">
 					<span class="card-title">Bot Log</span>
@@ -1845,6 +2016,50 @@
 					</div>
 				</div>
 				<div class="log-box" id="log-box">Loading…</div>
+			</div>
+
+			<!-- Ejection Shield Override ───────────────────────────── -->
+			<div class="card" id="ejection-shield-card">
+				<div class="card-header">
+					<span class="card-title">🛡 Ejection Shield — Manual Overrides</span>
+					<button class="refresh-btn" onclick="loadShield()">↻ Refresh</button>
+				</div>
+				<p style="font-size:11px;color:var(--muted);margin:0 0 12px">
+					Suppress false-positive ejections on a per-symbol basis or by blocking specific headline keywords.
+					Changes take effect immediately — the bot reads this file before every ejection decision.
+				</p>
+
+				<!-- Two-column layout -->
+				<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+
+					<!-- Left: suppressed symbols -->
+					<div>
+						<div style="font-size:12px;font-weight:600;color:var(--blue);margin-bottom:8px">Suppressed Symbols</div>
+						<div id="shield-symbols-list" style="min-height:40px;margin-bottom:10px"></div>
+						<!-- Add form -->
+						<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+							<input id="shield-sym-input" type="text" placeholder="Symbol (e.g. XOM)"
+								style="width:90px;padding:4px 8px;background:var(--panel);border:1px solid var(--border);border-radius:4px;color:var(--fg);font-size:12px;text-transform:uppercase" />
+							<input id="shield-sym-minutes" type="number" placeholder="Min (blank=∞)"
+								style="width:110px;padding:4px 8px;background:var(--panel);border:1px solid var(--border);border-radius:4px;color:var(--fg);font-size:12px" min="1" max="1440" />
+							<button class="refresh-btn" onclick="shieldSuppressSymbol()"
+								style="background:var(--green);color:#000;font-weight:600">+ Suppress</button>
+						</div>
+					</div>
+
+					<!-- Right: blocked keywords -->
+					<div>
+						<div style="font-size:12px;font-weight:600;color:var(--yellow);margin-bottom:8px">Blocked Headline Keywords</div>
+						<div id="shield-keywords-list" style="min-height:40px;margin-bottom:10px"></div>
+						<!-- Add form -->
+						<div style="display:flex;gap:6px;align-items:center">
+							<input id="shield-kw-input" type="text" placeholder="Keyword or phrase"
+								style="flex:1;padding:4px 8px;background:var(--panel);border:1px solid var(--border);border-radius:4px;color:var(--fg);font-size:12px" />
+							<button class="refresh-btn" onclick="shieldAddKeyword()"
+								style="background:var(--yellow);color:#000;font-weight:600">+ Block</button>
+						</div>
+					</div>
+				</div>
 			</div>
 
 			<!-- Row 6: Algorithm Config ──────────────────────────── -->
@@ -2048,6 +2263,22 @@
 								<label class="cfg-label">Min Hold Calendar Days<span class="cfg-hint">PDT guard — hold at least N days</span></label
 								><input type="number" class="cfg-input" data-key="MIN_HOLD_CALENDAR_DAYS" min="1" max="10" step="1" />
 							</div>
+							<div class="cfg-section-title">Hard Stop &amp; Stale Loser</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Hard Exit Loss %<span class="cfg-hint">Force-sell if unrealised loss exceeds N% (prevents deep bleeders)</span></label
+								><input type="number" class="cfg-input" data-key="MAX_LOSS_EXIT_PCT" min="-0.25" max="-0.02" step="0.01" />
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Stale Loser Exit<span class="cfg-hint">Hard-exit a stale position that is losing AND below EMA-50</span></label
+								><select class="cfg-input" data-key="STALE_LOSER_EXIT_ENABLED">
+									<option value="true">Enabled</option>
+									<option value="false">Disabled</option>
+								</select>
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Dead Money Soft Gates<span class="cfg-hint">Soft signals required to exit a stale flat position (0 = exit immediately)</span></label
+								><input type="number" class="cfg-input" data-key="DEAD_MONEY_SOFT_GATES" min="0" max="3" step="1" />
+							</div>
 						</div>
 					</div>
 
@@ -2120,6 +2351,22 @@
 							<div class="cfg-row">
 								<label class="cfg-label">PDT Lookback Days</label
 								><input type="number" class="cfg-input" data-key="PDT_LOOKBACK_DAYS" min="3" max="10" step="1" />
+							</div>
+							<div class="cfg-section-title">Portfolio Correlation Guard</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Correlation Guard<span class="cfg-hint">Reject new entries too correlated with open positions</span></label
+								><select class="cfg-input" data-key="CORRELATION_GUARD_ENABLED">
+									<option value="true">Enabled</option>
+									<option value="false">Disabled</option>
+								</select>
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Correlation Lookback Days<span class="cfg-hint">Trading days of history used to compute Pearson r</span></label
+								><input type="number" class="cfg-input" data-key="CORRELATION_LOOKBACK" min="10" max="90" step="5" />
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Max Correlation<span class="cfg-hint">Reject entry if |r| &ge; this vs any open position</span></label
+								><input type="number" class="cfg-input" data-key="MAX_CORRELATION" min="0.5" max="1" step="0.05" />
 							</div>
 						</div>
 					</div>
@@ -2203,6 +2450,62 @@
 								<label class="cfg-label">Inverse ETF Size Scale<span class="cfg-hint">Fraction of normal size</span></label
 								><input type="number" class="cfg-input" data-key="INVERSE_ETF_SIZE_SCALE" min="0.1" max="1" step="0.05" />
 							</div>
+							<div class="cfg-section-title">HMM Regime Detection (Hidden Markov Model)</div>
+							<div class="cfg-row">
+								<label class="cfg-label">HMM Enabled<span class="cfg-hint">Use HMM for regime detection (falls back to EMA-200 if unavailable)</span></label
+								><select class="cfg-input" data-key="HMM_REGIME_ENABLED">
+									<option value="true">Enabled</option>
+									<option value="false">Disabled</option>
+								</select>
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Bear P Threshold<span class="cfg-hint">P(BEAR) &ge; N &rarr; declare bear market</span></label
+								><input type="number" class="cfg-input" data-key="HMM_BEAR_THRESHOLD" min="0.3" max="0.95" step="0.05" />
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Chop P Threshold<span class="cfg-hint">P(CHOP) &ge; N &rarr; declare choppy (reduces sizing)</span></label
+								><input type="number" class="cfg-input" data-key="HMM_CHOP_THRESHOLD" min="0.3" max="0.95" step="0.05" />
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Chop Size Scale<span class="cfg-hint">Position size multiplier in chop regime</span></label
+								><input type="number" class="cfg-input" data-key="HMM_CHOP_SIZE_SCALE" min="0.1" max="1" step="0.05" />
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">HMM Lookback Days<span class="cfg-hint">Recent bars fed into HMM (shorter = faster regime flip)</span></label
+								><input type="number" class="cfg-input" data-key="HMM_LOOKBACK" min="3" max="30" step="1" />
+							</div>
+							<div class="cfg-section-title">HMM Bear Overrides (BEAR &rarr; CHOP)</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Overrides Enabled<span class="cfg-hint">Disable to let HMM BEAR pass through directly &mdash; enables inverse ETF / short mode even when SPY is above EMA-200 or recently recovering</span></label
+								><select class="cfg-input" data-key="HMM_MOMENTUM_OVERRIDE_ENABLED">
+									<option value="true">Enabled</option>
+									<option value="false">Disabled</option>
+								</select>
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Override Lookback Days<span class="cfg-hint">SPY return window (default 3 days)</span></label
+								><input type="number" class="cfg-input" data-key="HMM_MOMENTUM_OVERRIDE_DAYS" min="1" max="10" step="1" />
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Recovery Threshold %<span class="cfg-hint">SPY N-day return above this &rarr; override BEAR to CHOP (no inverse ETFs)</span></label
+								><input type="number" class="cfg-input" data-key="HMM_MOMENTUM_OVERRIDE_PCT" min="0.005" max="0.05" step="0.005" />
+							</div>
+							<div class="cfg-section-title">Bear Market Short-Selling</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Bear Short Mode<span class="cfg-hint">Short stocks from watchlist in bear regime</span></label
+								><select class="cfg-input" data-key="BEAR_SHORT_MODE_ENABLED">
+									<option value="true">Enabled</option>
+									<option value="false">Disabled</option>
+								</select>
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Short Size Scale<span class="cfg-hint">Fraction of normal size for short positions</span></label
+								><input type="number" class="cfg-input" data-key="BEAR_SHORT_SIZE_SCALE" min="0.1" max="1" step="0.05" />
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Short Min Equity $<span class="cfg-hint">Below this equity &rarr; buy inverse ETFs instead of shorting</span></label
+								><input type="number" class="cfg-input" data-key="SHORT_MIN_EQUITY" min="100" max="50000" step="100" />
+							</div>
 						</div>
 					</div>
 
@@ -2244,6 +2547,58 @@
 							<div class="cfg-row">
 								<label class="cfg-label">Min Gain % (label)<span class="cfg-hint">Label=1 if close ≥ entry × (1 + this) within forward bars</span></label
 								><input type="number" class="cfg-input" data-key="ML_MIN_GAIN_PCT" min="0.005" max="0.20" step="0.005" />
+							</div>
+							<div class="cfg-section-title">Short Entry Model (Bear Mode)</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Short ML Enabled<span class="cfg-hint">Enable GBM short model in bear regime</span></label
+								><select class="cfg-input" data-key="ML_SHORT_ENABLED">
+									<option value="true">Enabled</option>
+									<option value="false">Disabled</option>
+								</select>
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Short Entry Threshold<span class="cfg-hint">Min short GBM probability to enter (0&ndash;1)</span></label
+								><input type="number" class="cfg-input" data-key="ML_SHORT_ENTRY_THRESHOLD" min="0.1" max="0.95" step="0.05" />
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Short Min Score<span class="cfg-hint">Min hand-crafted short score before consulting GBM</span></label
+								><input type="number" class="cfg-input" data-key="ML_SHORT_MIN_SCORE" min="1" max="12" step="1" />
+							</div>
+							<div class="cfg-section-title">Inverse ETF Entry Model (Bear Mode)</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Inverse ML Enabled<span class="cfg-hint">Enable GBM inverse ETF model in bear regime</span></label
+								><select class="cfg-input" data-key="ML_INVERSE_ENABLED">
+									<option value="true">Enabled</option>
+									<option value="false">Disabled</option>
+								</select>
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Inverse Entry Threshold<span class="cfg-hint">Min inverse GBM probability to enter (0&ndash;1)</span></label
+								><input type="number" class="cfg-input" data-key="ML_INVERSE_ENTRY_THRESHOLD" min="0.1" max="0.95" step="0.05" />
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Inverse Min Score<span class="cfg-hint">Min hand-crafted score before consulting inverse GBM</span></label
+								><input type="number" class="cfg-input" data-key="ML_INVERSE_MIN_SCORE" min="1" max="12" step="1" />
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Inverse Recency Half-life Days<span class="cfg-hint">Shorter half-life keeps inverse model focused on recent bear mechanics</span></label
+								><input type="number" class="cfg-input" data-key="ML_INVERSE_RECENCY_HALFLIFE_DAYS" min="30" max="365" step="30" />
+							</div>
+							<div class="cfg-section-title">Training Recency Weighting</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Recency Weighting<span class="cfg-hint">Exponentially up-weight recent training rows</span></label
+								><select class="cfg-input" data-key="ML_RECENCY_WEIGHT_ENABLED">
+									<option value="true">Enabled</option>
+									<option value="false">Disabled</option>
+								</select>
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Long Model Half-life Days<span class="cfg-hint">Half-life for long model recency weights (365 = balanced bull+bear memory)</span></label
+								><input type="number" class="cfg-input" data-key="ML_RECENCY_HALFLIFE_DAYS" min="30" max="730" step="30" />
+							</div>
+							<div class="cfg-row">
+								<label class="cfg-label">Recency Min Weight<span class="cfg-hint">Floor weight — old bars never drop below this fraction of max weight</span></label
+								><input type="number" class="cfg-input" data-key="ML_RECENCY_MIN_WEIGHT" min="0.01" max="0.5" step="0.01" />
 							</div>
 						</div>
 					</div>
@@ -2734,6 +3089,22 @@
 											<label class="cfg-label">Min Hold Calendar Days<span class="cfg-hint">PDT guard — hold at least N days</span></label
 											><input type="number" class="bt-cfg-input" data-btkey="MIN_HOLD_CALENDAR_DAYS" min="1" max="10" step="1" />
 										</div>
+										<div class="cfg-section-title">Hard Stop &amp; Stale Loser</div>
+										<div class="cfg-row">
+											<label class="cfg-label">Hard Exit Loss %<span class="cfg-hint">Force-sell if unrealised loss exceeds N% (prevents deep bleeders)</span></label
+											><input type="number" class="bt-cfg-input" data-btkey="MAX_LOSS_EXIT_PCT" min="-0.25" max="-0.02" step="0.01" />
+										</div>
+										<div class="cfg-row">
+											<label class="cfg-label">Stale Loser Exit<span class="cfg-hint">Hard-exit a stale position that is losing AND below EMA-50</span></label
+											><select class="bt-cfg-input" data-btkey="STALE_LOSER_EXIT_ENABLED">
+												<option value="true">Enabled</option>
+												<option value="false">Disabled</option>
+											</select>
+										</div>
+										<div class="cfg-row">
+											<label class="cfg-label">Dead Money Soft Gates<span class="cfg-hint">Soft signals required to exit a stale flat position (0 = exit immediately)</span></label
+											><input type="number" class="bt-cfg-input" data-btkey="DEAD_MONEY_SOFT_GATES" min="0" max="3" step="1" />
+										</div>
 									</div>
 								</div>
 
@@ -2805,6 +3176,22 @@
 										<div class="cfg-row">
 											<label class="cfg-label">PDT Lookback Days</label
 											><input type="number" class="bt-cfg-input" data-btkey="PDT_LOOKBACK_DAYS" min="3" max="10" step="1" />
+										</div>
+										<div class="cfg-section-title">Portfolio Correlation Guard</div>
+										<div class="cfg-row">
+											<label class="cfg-label">Correlation Guard<span class="cfg-hint">Reject new entries too correlated with open positions</span></label
+											><select class="bt-cfg-input" data-btkey="CORRELATION_GUARD_ENABLED">
+												<option value="true">Enabled</option>
+												<option value="false">Disabled</option>
+											</select>
+										</div>
+										<div class="cfg-row">
+											<label class="cfg-label">Correlation Lookback Days<span class="cfg-hint">Trading days of history used to compute Pearson r</span></label
+											><input type="number" class="bt-cfg-input" data-btkey="CORRELATION_LOOKBACK" min="10" max="90" step="5" />
+										</div>
+										<div class="cfg-row">
+											<label class="cfg-label">Max Correlation<span class="cfg-hint">Reject entry if |r| &ge; this vs any open position</span></label
+											><input type="number" class="bt-cfg-input" data-btkey="MAX_CORRELATION" min="0.5" max="1" step="0.05" />
 										</div>
 									</div>
 								</div>
@@ -2888,6 +3275,62 @@
 											<label class="cfg-label">Inverse ETF Size Scale<span class="cfg-hint">Fraction of normal size</span></label
 											><input type="number" class="bt-cfg-input" data-btkey="INVERSE_ETF_SIZE_SCALE" min="0.1" max="1" step="0.05" />
 										</div>
+										<div class="cfg-section-title">HMM Regime Detection (Hidden Markov Model)</div>
+										<div class="cfg-row">
+											<label class="cfg-label">HMM Enabled<span class="cfg-hint">Use HMM for regime detection (falls back to EMA-200 if unavailable)</span></label
+											><select class="bt-cfg-input" data-btkey="HMM_REGIME_ENABLED">
+												<option value="true">Enabled</option>
+												<option value="false">Disabled</option>
+											</select>
+										</div>
+										<div class="cfg-row">
+											<label class="cfg-label">Bear P Threshold<span class="cfg-hint">P(BEAR) &ge; N &rarr; declare bear market</span></label
+											><input type="number" class="bt-cfg-input" data-btkey="HMM_BEAR_THRESHOLD" min="0.3" max="0.95" step="0.05" />
+										</div>
+										<div class="cfg-row">
+											<label class="cfg-label">Chop P Threshold<span class="cfg-hint">P(CHOP) &ge; N &rarr; declare choppy (reduces sizing)</span></label
+											><input type="number" class="bt-cfg-input" data-btkey="HMM_CHOP_THRESHOLD" min="0.3" max="0.95" step="0.05" />
+										</div>
+										<div class="cfg-row">
+											<label class="cfg-label">Chop Size Scale<span class="cfg-hint">Position size multiplier in chop regime</span></label
+											><input type="number" class="bt-cfg-input" data-btkey="HMM_CHOP_SIZE_SCALE" min="0.1" max="1" step="0.05" />
+										</div>
+										<div class="cfg-row">
+											<label class="cfg-label">HMM Lookback Days<span class="cfg-hint">Recent bars fed into HMM (shorter = faster regime flip)</span></label
+											><input type="number" class="bt-cfg-input" data-btkey="HMM_LOOKBACK" min="3" max="30" step="1" />
+										</div>
+										<div class="cfg-section-title">HMM Bear Overrides (BEAR &rarr; CHOP)</div>
+										<div class="cfg-row">
+											<label class="cfg-label">Override Enabled<span class="cfg-hint">Downgrade BEAR to CHOP when SPY is recovering &mdash; prevents inverse ETF entries during bounces</span></label
+											><select class="bt-cfg-input" data-btkey="HMM_MOMENTUM_OVERRIDE_ENABLED">
+												<option value="true">Enabled</option>
+												<option value="false">Disabled</option>
+											</select>
+										</div>
+										<div class="cfg-row">
+											<label class="cfg-label">Override Lookback Days<span class="cfg-hint">SPY return window (default 3 days)</span></label
+											><input type="number" class="bt-cfg-input" data-btkey="HMM_MOMENTUM_OVERRIDE_DAYS" min="1" max="10" step="1" />
+										</div>
+										<div class="cfg-row">
+											<label class="cfg-label">Recovery Threshold %<span class="cfg-hint">SPY N-day return above this &rarr; override BEAR to CHOP (no inverse ETFs)</span></label
+											><input type="number" class="bt-cfg-input" data-btkey="HMM_MOMENTUM_OVERRIDE_PCT" min="0.005" max="0.05" step="0.005" />
+										</div>
+										<div class="cfg-section-title">Bear Market Short-Selling</div>
+										<div class="cfg-row">
+											<label class="cfg-label">Bear Short Mode<span class="cfg-hint">Short stocks from watchlist in bear regime</span></label
+											><select class="bt-cfg-input" data-btkey="BEAR_SHORT_MODE_ENABLED">
+												<option value="true">Enabled</option>
+												<option value="false">Disabled</option>
+											</select>
+										</div>
+										<div class="cfg-row">
+											<label class="cfg-label">Short Size Scale<span class="cfg-hint">Fraction of normal size for short positions</span></label
+											><input type="number" class="bt-cfg-input" data-btkey="BEAR_SHORT_SIZE_SCALE" min="0.1" max="1" step="0.05" />
+										</div>
+										<div class="cfg-row">
+											<label class="cfg-label">Short Min Equity $<span class="cfg-hint">Below this equity &rarr; buy inverse ETFs instead of shorting</span></label
+											><input type="number" class="bt-cfg-input" data-btkey="SHORT_MIN_EQUITY" min="100" max="50000" step="100" />
+										</div>
 									</div>
 								</div>
 
@@ -2964,6 +3407,58 @@
 											<div class="cfg-row">
 												<label class="cfg-label">Min Gain % (label)<span class="cfg-hint">Label=1 if close ≥ entry × (1 + this) within forward bars</span></label
 												><input type="number" class="bt-cfg-input" data-btkey="ML_MIN_GAIN_PCT" min="0.005" max="0.20" step="0.005" />
+											</div>
+											<div class="cfg-section-title">Short Entry Model (Bear Mode)</div>
+											<div class="cfg-row">
+												<label class="cfg-label">Short ML Enabled<span class="cfg-hint">Enable GBM short model in bear regime</span></label
+												><select class="bt-cfg-input" data-btkey="ML_SHORT_ENABLED">
+													<option value="true">Enabled</option>
+													<option value="false">Disabled</option>
+												</select>
+											</div>
+											<div class="cfg-row">
+												<label class="cfg-label">Short Entry Threshold<span class="cfg-hint">Min short GBM probability to enter (0&ndash;1)</span></label
+												><input type="number" class="bt-cfg-input" data-btkey="ML_SHORT_ENTRY_THRESHOLD" min="0.1" max="0.95" step="0.05" />
+											</div>
+											<div class="cfg-row">
+												<label class="cfg-label">Short Min Score<span class="cfg-hint">Min hand-crafted short score before consulting GBM</span></label
+												><input type="number" class="bt-cfg-input" data-btkey="ML_SHORT_MIN_SCORE" min="1" max="12" step="1" />
+											</div>
+											<div class="cfg-section-title">Inverse ETF Entry Model (Bear Mode)</div>
+											<div class="cfg-row">
+												<label class="cfg-label">Inverse ML Enabled<span class="cfg-hint">Enable GBM inverse ETF model in bear regime</span></label
+												><select class="bt-cfg-input" data-btkey="ML_INVERSE_ENABLED">
+													<option value="true">Enabled</option>
+													<option value="false">Disabled</option>
+												</select>
+											</div>
+											<div class="cfg-row">
+												<label class="cfg-label">Inverse Entry Threshold<span class="cfg-hint">Min inverse GBM probability to enter (0&ndash;1)</span></label
+												><input type="number" class="bt-cfg-input" data-btkey="ML_INVERSE_ENTRY_THRESHOLD" min="0.1" max="0.95" step="0.05" />
+											</div>
+											<div class="cfg-row">
+												<label class="cfg-label">Inverse Min Score<span class="cfg-hint">Min hand-crafted score before consulting inverse GBM</span></label
+												><input type="number" class="bt-cfg-input" data-btkey="ML_INVERSE_MIN_SCORE" min="1" max="12" step="1" />
+											</div>
+											<div class="cfg-row">
+												<label class="cfg-label">Inverse Recency Half-life Days<span class="cfg-hint">Shorter half-life keeps inverse model focused on recent bear mechanics</span></label
+												><input type="number" class="bt-cfg-input" data-btkey="ML_INVERSE_RECENCY_HALFLIFE_DAYS" min="30" max="365" step="30" />
+											</div>
+											<div class="cfg-section-title">Training Recency Weighting</div>
+											<div class="cfg-row">
+												<label class="cfg-label">Recency Weighting<span class="cfg-hint">Exponentially up-weight recent training rows</span></label
+												><select class="bt-cfg-input" data-btkey="ML_RECENCY_WEIGHT_ENABLED">
+													<option value="true">Enabled</option>
+													<option value="false">Disabled</option>
+												</select>
+											</div>
+											<div class="cfg-row">
+												<label class="cfg-label">Long Model Half-life Days<span class="cfg-hint">Half-life for long model recency weights (365 = balanced bull+bear memory)</span></label
+												><input type="number" class="bt-cfg-input" data-btkey="ML_RECENCY_HALFLIFE_DAYS" min="30" max="730" step="30" />
+											</div>
+											<div class="cfg-row">
+												<label class="cfg-label">Recency Min Weight<span class="cfg-hint">Floor weight — old bars never drop below this fraction of max weight</span></label
+												><input type="number" class="bt-cfg-input" data-btkey="ML_RECENCY_MIN_WEIGHT" min="0.01" max="0.5" step="0.01" />
 											</div>
 										</div>
 									</div>
@@ -3238,6 +3733,22 @@
 			}
 
 			/* ── Market regime ───────────────────────────────────────── */
+			async function reloadHmm() {
+				const btn = document.getElementById("hmm-reload-btn");
+				btn.disabled = true;
+				btn.textContent = "⟳ Reloading…";
+				try {
+					const res = await fetch("/api/hmm/reload", { method: "POST" });
+					const data = await res.json();
+					btn.textContent = data.model_loaded ? "✓ Loaded" : "✗ Not found";
+					setTimeout(() => { btn.disabled = false; btn.textContent = "⟳ Reload HMM"; }, 2500);
+					if (data.model_loaded) loadRegime();
+				} catch (e) {
+					btn.textContent = "✗ Error";
+					setTimeout(() => { btn.disabled = false; btn.textContent = "⟳ Reload HMM"; }, 2500);
+				}
+			}
+
 			async function loadRegime() {
 				try {
 					const d = await apiFetch("/api/regime");
@@ -3480,6 +3991,310 @@
 				});
 			}
 
+			let _tradeDiagnosticsCache = null;
+
+			function drawCanvasMessage(canvas, message, color = "#8b949e") {
+				const ctx = canvas.getContext("2d");
+				const dpr = window.devicePixelRatio || 1;
+				const rect = canvas.getBoundingClientRect();
+				canvas.width = rect.width * dpr;
+				canvas.height = rect.height * dpr;
+				ctx.scale(dpr, dpr);
+				ctx.clearRect(0, 0, rect.width, rect.height);
+				ctx.fillStyle = color;
+				ctx.font = "12px system-ui";
+				ctx.textAlign = "center";
+				ctx.fillText(message, rect.width / 2, rect.height / 2);
+			}
+
+			function drawTradeDiagnosticsCurve(canvas, data) {
+				if (!data || !data.length) {
+					drawCanvasMessage(canvas, "No closed trades yet");
+					return;
+				}
+
+				const ctx = canvas.getContext("2d");
+				const dpr = window.devicePixelRatio || 1;
+				const rect = canvas.getBoundingClientRect();
+				canvas.width = rect.width * dpr;
+				canvas.height = rect.height * dpr;
+				ctx.scale(dpr, dpr);
+
+				const W = rect.width;
+				const H = rect.height;
+				const pad = { top: 16, right: 20, bottom: 36, left: 64 };
+				const cW = W - pad.left - pad.right;
+				const cH = H - pad.top - pad.bottom;
+				ctx.clearRect(0, 0, W, H);
+
+				const values = data.map((point) => point.cumulative_pnl || 0);
+				const minVal = Math.min(...values, 0);
+				const maxVal = Math.max(...values, 0);
+				const range = maxVal - minVal || 1;
+
+				const xScale = (i) => pad.left + (i / Math.max(1, data.length - 1)) * cW;
+				const yScale = (value) => pad.top + cH - ((value - minVal) / range) * cH;
+
+				ctx.strokeStyle = "#21262d";
+				ctx.lineWidth = 1;
+				for (let i = 0; i <= 4; i++) {
+					const y = pad.top + (i / 4) * cH;
+					ctx.beginPath();
+					ctx.moveTo(pad.left, y);
+					ctx.lineTo(W - pad.right, y);
+					ctx.stroke();
+					const v = maxVal - (i / 4) * range;
+					ctx.fillStyle = "#8b949e";
+					ctx.font = "10px system-ui";
+					ctx.textAlign = "right";
+					ctx.fillText(`${v < 0 ? "-" : ""}$${Math.abs(v).toFixed(0)}`, pad.left - 6, y + 3);
+				}
+
+				if (minVal < 0 && maxVal > 0) {
+					const zeroY = yScale(0);
+					ctx.save();
+					ctx.setLineDash([4, 4]);
+					ctx.strokeStyle = "#8b949e";
+					ctx.beginPath();
+					ctx.moveTo(pad.left, zeroY);
+					ctx.lineTo(W - pad.right, zeroY);
+					ctx.stroke();
+					ctx.restore();
+				}
+
+				ctx.fillStyle = "#8b949e";
+				ctx.font = "10px system-ui";
+				ctx.textAlign = "center";
+				const step = Math.max(1, Math.floor(data.length / 5));
+				for (let i = 0; i < data.length; i += step) {
+					const x = xScale(i);
+					const label = data[i].date ? data[i].date.slice(5) : `#${data[i].trade_number}`;
+					ctx.fillText(label, x, H - pad.bottom + 16);
+				}
+				if (data.length > 1) {
+					const lastX = xScale(data.length - 1);
+					const lastLabel = data[data.length - 1].date ? data[data.length - 1].date.slice(5) : `#${data[data.length - 1].trade_number}`;
+					ctx.fillText(lastLabel, lastX, H - pad.bottom + 16);
+				}
+
+				const finalValue = values[values.length - 1] || 0;
+				const baseline = yScale(0);
+				const gradient = ctx.createLinearGradient(0, pad.top, 0, pad.top + cH);
+				if (finalValue >= 0) {
+					gradient.addColorStop(0, "rgba(63,185,80,0.22)");
+					gradient.addColorStop(1, "rgba(63,185,80,0.02)");
+				} else {
+					gradient.addColorStop(0, "rgba(248,81,73,0.20)");
+					gradient.addColorStop(1, "rgba(248,81,73,0.02)");
+				}
+
+				ctx.beginPath();
+				ctx.moveTo(xScale(0), baseline);
+				data.forEach((point, idx) => ctx.lineTo(xScale(idx), yScale(point.cumulative_pnl || 0)));
+				ctx.lineTo(xScale(data.length - 1), baseline);
+				ctx.closePath();
+				ctx.fillStyle = gradient;
+				ctx.fill();
+
+				ctx.beginPath();
+				ctx.moveTo(xScale(0), yScale(values[0]));
+				for (let i = 1; i < data.length; i++) ctx.lineTo(xScale(i), yScale(values[i]));
+				ctx.strokeStyle = finalValue >= 0 ? "#3fb950" : "#f85149";
+				ctx.lineWidth = 2;
+				ctx.lineJoin = "round";
+				ctx.stroke();
+
+				ctx.beginPath();
+				ctx.arc(xScale(data.length - 1), yScale(finalValue), 4, 0, Math.PI * 2);
+				ctx.fillStyle = finalValue >= 0 ? "#3fb950" : "#f85149";
+				ctx.strokeStyle = "#0d1117";
+				ctx.lineWidth = 2;
+				ctx.fill();
+				ctx.stroke();
+			}
+
+			function drawTradeReturnDistribution(canvas, buckets) {
+				if (!buckets || !buckets.length || !buckets.some((bucket) => bucket.count > 0)) {
+					drawCanvasMessage(canvas, "No return distribution yet");
+					return;
+				}
+
+				const ctx = canvas.getContext("2d");
+				const dpr = window.devicePixelRatio || 1;
+				const rect = canvas.getBoundingClientRect();
+				canvas.width = rect.width * dpr;
+				canvas.height = rect.height * dpr;
+				ctx.scale(dpr, dpr);
+
+				const W = rect.width;
+				const H = rect.height;
+				const pad = { top: 16, right: 12, bottom: 42, left: 46 };
+				const cW = W - pad.left - pad.right;
+				const cH = H - pad.top - pad.bottom;
+				ctx.clearRect(0, 0, W, H);
+
+				const counts = buckets.map((bucket) => bucket.count || 0);
+				const maxCount = Math.max(...counts, 1);
+				const shortLabels = ["≤-8", "-8→-4", "-4→-1", "-1→1", "1→4", "4→8", "≥8"];
+
+				ctx.strokeStyle = "#21262d";
+				ctx.lineWidth = 1;
+				for (let i = 0; i <= 4; i++) {
+					const y = pad.top + (i / 4) * cH;
+					ctx.beginPath();
+					ctx.moveTo(pad.left, y);
+					ctx.lineTo(W - pad.right, y);
+					ctx.stroke();
+					const v = Math.round(maxCount - (i / 4) * maxCount);
+					ctx.fillStyle = "#8b949e";
+					ctx.font = "10px system-ui";
+					ctx.textAlign = "right";
+					ctx.fillText(v, pad.left - 6, y + 3);
+				}
+
+				const slotW = cW / buckets.length;
+				const barW = slotW * 0.62;
+				buckets.forEach((bucket, idx) => {
+					const x = pad.left + idx * slotW + (slotW - barW) / 2;
+					const h = (bucket.count / maxCount) * cH;
+					const y = pad.top + cH - h;
+					const fill = idx < 3 ? "rgba(248,81,73,0.78)" : idx === 3 ? "rgba(210,153,34,0.78)" : "rgba(63,185,80,0.78)";
+					ctx.fillStyle = fill;
+					ctx.fillRect(x, y, barW, h);
+					if (bucket.count > 0) {
+						ctx.fillStyle = "#e6edf3";
+						ctx.font = "10px system-ui";
+						ctx.textAlign = "center";
+						ctx.fillText(bucket.count, x + barW / 2, y - 6);
+					}
+					ctx.fillStyle = "#8b949e";
+					ctx.font = "10px system-ui";
+					ctx.textAlign = "center";
+					ctx.fillText(shortLabels[idx] || bucket.label, x + barW / 2, H - pad.bottom + 18);
+				});
+			}
+
+			function redrawTradeDiagnosticsCharts() {
+				if (!_tradeDiagnosticsCache) return;
+				drawTradeDiagnosticsCurve($("diag-pnl-canvas"), _tradeDiagnosticsCache.cumulative_pnl || []);
+				drawTradeReturnDistribution($("diag-dist-canvas"), _tradeDiagnosticsCache.return_distribution || []);
+			}
+
+			async function loadTradeDiagnostics() {
+				const notesEl = $("diag-note-grid");
+				const scoreTbody = $("diag-score-tbody");
+				const exitTbody = $("diag-exit-tbody");
+				const weekdayTbody = $("diag-weekday-tbody");
+				try {
+					const d = await apiFetch("/api/trade_diagnostics");
+					_tradeDiagnosticsCache = d;
+					const summary = d.summary || {};
+
+					const signedMoney = (value) => {
+						if (value == null) return "—";
+						const num = Number(value);
+						return `${num >= 0 ? "+" : "-"}$${Math.abs(num).toFixed(2)}`;
+					};
+					const signedPct = (value) => {
+						if (value == null) return "—";
+						const num = Number(value);
+						return `${num >= 0 ? "+" : "-"}${Math.abs(num).toFixed(2)}%`;
+					};
+					const pct = (value, digits = 1) => value != null ? `${Number(value).toFixed(digits)}%` : "—";
+					const withColor = (el, value, positiveThreshold = 0) => {
+						el.style.color = value == null ? "var(--text)" : value > positiveThreshold ? "var(--green)" : value < positiveThreshold ? "var(--red)" : "var(--text)";
+					};
+
+					const expectancyEl = $("diag-expectancy");
+					expectancyEl.textContent = signedMoney(summary.expectancy_per_trade);
+					withColor(expectancyEl, summary.expectancy_per_trade);
+					$("diag-expectancy-sub").textContent = `${summary.total_trades || 0} closed trades analysed`;
+
+					const medianEl = $("diag-median-return");
+					medianEl.textContent = signedPct(summary.median_pnl_pct);
+					withColor(medianEl, summary.median_pnl_pct);
+
+					const payoffEl = $("diag-payoff-ratio");
+					payoffEl.textContent = summary.payoff_ratio != null ? Number(summary.payoff_ratio).toFixed(2) : "—";
+					payoffEl.style.color = summary.payoff_ratio == null ? "var(--text)" : summary.payoff_ratio >= 1 ? "var(--green)" : "var(--yellow)";
+
+					const bestStreakEl = $("diag-best-streak");
+					bestStreakEl.textContent = summary.best_win_streak ?? "—";
+					bestStreakEl.style.color = (summary.best_win_streak || 0) >= 2 ? "var(--green)" : "var(--text)";
+
+					const worstStreakEl = $("diag-worst-streak");
+					worstStreakEl.textContent = summary.worst_loss_streak ?? "—";
+					worstStreakEl.style.color = (summary.worst_loss_streak || 0) >= 3 ? "var(--red)" : "var(--yellow)";
+
+					const shareEl = $("diag-profit-share");
+					shareEl.textContent = pct(summary.profit_concentration_top5_pct);
+					shareEl.style.color = summary.profit_concentration_top5_pct == null ? "var(--text)" : summary.profit_concentration_top5_pct >= 60 ? "var(--yellow)" : "var(--green)";
+
+					const insights = d.insights || [];
+					if (!insights.length) {
+						notesEl.innerHTML = '<div class="diag-note">Closed trades will populate diagnostic notes once the journal has enough history to find patterns.</div>';
+					} else {
+						notesEl.innerHTML = insights.map((note) => `<div class="diag-note">${escHtml(note)}</div>`).join("");
+					}
+
+					const scoreBuckets = d.score_buckets || [];
+					if (!scoreBuckets.length) {
+						scoreTbody.innerHTML = '<tr><td colspan="4" class="empty-state">No scored trades yet</td></tr>';
+					} else {
+						scoreTbody.innerHTML = scoreBuckets.map((row) => {
+							const avgClass = row.avg_pnl_pct > 0 ? "pos" : row.avg_pnl_pct < 0 ? "neg" : "neu";
+							return `<tr>
+								<td><strong>${row.bucket}</strong></td>
+								<td class="num">${row.trades}</td>
+								<td class="num ${row.win_rate >= 50 ? "pos" : row.win_rate != null ? "neg" : "neu"}">${pct(row.win_rate)}</td>
+								<td class="num ${avgClass}">${signedPct(row.avg_pnl_pct)}</td>
+							</tr>`;
+						}).join("");
+					}
+
+					const exitReasons = d.exit_reasons || [];
+					if (!exitReasons.length) {
+						exitTbody.innerHTML = '<tr><td colspan="4" class="empty-state">No exit data yet</td></tr>';
+					} else {
+						exitTbody.innerHTML = exitReasons.map((row) => {
+							const pnlClass = row.total_pnl > 0 ? "pos" : row.total_pnl < 0 ? "neg" : "neu";
+							const wrClass = row.win_rate >= 50 ? "pos" : row.win_rate != null ? "neg" : "neu";
+							return `<tr>
+								<td><strong>${row.label}</strong></td>
+								<td class="num">${row.trades}</td>
+								<td class="num ${wrClass}">${pct(row.win_rate)}</td>
+								<td class="num ${pnlClass}">${signedMoney(row.total_pnl)}</td>
+							</tr>`;
+						}).join("");
+					}
+
+					const weekdays = d.weekdays || [];
+					if (!weekdays.length) {
+						weekdayTbody.innerHTML = '<tr><td colspan="4" class="empty-state">No weekday data yet</td></tr>';
+					} else {
+						weekdayTbody.innerHTML = weekdays.map((row) => {
+							const pnlClass = row.avg_pnl > 0 ? "pos" : row.avg_pnl < 0 ? "neg" : "neu";
+							const wrClass = row.win_rate >= 50 ? "pos" : row.win_rate != null ? "neg" : "neu";
+							return `<tr>
+								<td><strong>${row.weekday}</strong></td>
+								<td class="num">${row.trades}</td>
+								<td class="num ${wrClass}">${pct(row.win_rate)}</td>
+								<td class="num ${pnlClass}">${signedMoney(row.avg_pnl)}</td>
+							</tr>`;
+						}).join("");
+					}
+
+					redrawTradeDiagnosticsCharts();
+				} catch (e) {
+					notesEl.innerHTML = `<div class="diag-note" style="border-left-color: var(--red)">Could not load trade diagnostics: ${escHtml(e.message)}</div>`;
+					scoreTbody.innerHTML = '<tr><td colspan="4" class="neg">Error loading diagnostics</td></tr>';
+					exitTbody.innerHTML = '<tr><td colspan="4" class="neg">Error loading diagnostics</td></tr>';
+					weekdayTbody.innerHTML = '<tr><td colspan="4" class="neg">Error loading diagnostics</td></tr>';
+					drawCanvasMessage($("diag-pnl-canvas"), "Could not load chart", "#f85149");
+					drawCanvasMessage($("diag-dist-canvas"), "Could not load chart", "#f85149");
+				}
+			}
+
 			/* ── Performance Analytics ───────────────────────────────── */
 			async function loadPerformance() {
 				try {
@@ -3610,7 +4425,7 @@
 					if (!resp.ok) throw new Error(d.detail || "Unknown error");
 					status.textContent = d.message;
 					status.style.color = "var(--green)";
-					await Promise.all([loadJournal(), loadPerformance(), loadFillMetrics()]);
+					await Promise.all([loadJournal(), loadPerformance(), loadFillMetrics(), loadTradeDiagnostics()]);
 				} catch (e) {
 					status.textContent = "Error: " + e.message;
 					status.style.color = "var(--red)";
@@ -3719,6 +4534,98 @@
 			}
 
 			/* ── Init ────────────────────────────────────────────────── */
+			/* ═══════════════════════════════════════════════════════════
+			   EJECTION SHIELD
+			   ═══════════════════════════════════════════════════════════ */
+
+			async function loadShield() {
+				try {
+					const d = await apiFetch("/api/ejection-shield");
+
+					// ── Suppressed symbols ──
+					const symDiv = document.getElementById("shield-symbols-list");
+					const syms = d.suppressed_symbols || {};
+					const symKeys = Object.keys(syms);
+					if (symKeys.length === 0) {
+						symDiv.innerHTML = '<span style="font-size:11px;color:var(--muted)">None — all ejections active</span>';
+					} else {
+						symDiv.innerHTML = symKeys.map(sym => {
+							const info = syms[sym];
+							const label = info.remaining_s == null
+								? '<span style="color:var(--muted);font-size:10px">indefinite</span>'
+								: `<span style="color:var(--muted);font-size:10px">${Math.ceil(info.remaining_s / 60)} min left</span>`;
+							return `<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+								<span style="font-weight:600;font-size:12px;color:var(--green)">${sym}</span>
+								${label}
+								<button class="refresh-btn" style="padding:2px 7px;font-size:10px;color:var(--red)"
+									onclick="shieldUnsuppress('${sym}')">✕ Remove</button>
+							</div>`;
+						}).join("");
+					}
+
+					// ── Blocked keywords ──
+					const kwDiv = document.getElementById("shield-keywords-list");
+					const kws = d.blocked_keywords || [];
+					if (kws.length === 0) {
+						kwDiv.innerHTML = '<span style="font-size:11px;color:var(--muted)">None — all keywords active</span>';
+					} else {
+						kwDiv.innerHTML = kws.map(kw =>
+							`<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+								<span style="font-size:12px;color:var(--yellow)">"${kw}"</span>
+								<button class="refresh-btn" style="padding:2px 7px;font-size:10px;color:var(--red)"
+									onclick="shieldRemoveKeyword('${kw.replace(/'/g, "\\'")}')">✕ Remove</button>
+							</div>`
+						).join("");
+					}
+				} catch(e) {
+					console.warn("loadShield failed", e);
+				}
+			}
+
+			async function shieldSuppressSymbol() {
+				const sym = document.getElementById("shield-sym-input").value.trim().toUpperCase();
+				const min = parseInt(document.getElementById("shield-sym-minutes").value) || null;
+				if (!sym) return;
+				try {
+					await apiFetch("/api/ejection-shield/suppress", {
+						method: "POST",
+						headers: {"Content-Type": "application/json"},
+						body: JSON.stringify({symbol: sym, minutes: min}),
+					});
+					document.getElementById("shield-sym-input").value = "";
+					document.getElementById("shield-sym-minutes").value = "";
+					loadShield();
+				} catch(e) { alert("Error suppressing symbol: " + e); }
+			}
+
+			async function shieldUnsuppress(symbol) {
+				try {
+					await apiFetch(`/api/ejection-shield/suppress/${symbol}`, {method: "DELETE"});
+					loadShield();
+				} catch(e) { alert("Error removing suppression: " + e); }
+			}
+
+			async function shieldAddKeyword() {
+				const kw = document.getElementById("shield-kw-input").value.trim();
+				if (!kw) return;
+				try {
+					await apiFetch("/api/ejection-shield/keyword", {
+						method: "POST",
+						headers: {"Content-Type": "application/json"},
+						body: JSON.stringify({keyword: kw}),
+					});
+					document.getElementById("shield-kw-input").value = "";
+					loadShield();
+				} catch(e) { alert("Error adding keyword: " + e); }
+			}
+
+			async function shieldRemoveKeyword(keyword) {
+				try {
+					await apiFetch(`/api/ejection-shield/keyword/${encodeURIComponent(keyword)}`, {method: "DELETE"});
+					loadShield();
+				} catch(e) { alert("Error removing keyword: " + e); }
+			}
+
 			async function init() {
 				// Load everything in parallel
 				await Promise.allSettled([
@@ -3739,6 +4646,7 @@
 				loadBtConfig();
 				loadWatchlistEditor();
 				loadPerformance();
+				loadTradeDiagnostics();
 				loadJournal();
 				loadFillMetrics();
 
@@ -3754,6 +4662,9 @@
 
 				// ML model status
 				loadMLStatus();
+
+				// Ejection Shield
+				loadShield();
 
 				// Start live stream
 				startSSE();
@@ -3771,12 +4682,17 @@
 				// Watchlist is slow (30 API calls) — refresh every 5 min
 				setInterval(loadWatchlist, 300_000);
 				setInterval(loadPerformance, 300_000); // every 5 min
+				setInterval(loadTradeDiagnostics, 300_000); // every 5 min
 				setInterval(loadJournal, 120_000);     // every 2 min
 				setInterval(loadFillMetrics, 300_000); // every 5 min
+				setInterval(loadShield, 60_000);       // every 1 min
 			}
 
 			window.addEventListener("load", init);
-			window.addEventListener("resize", () => loadEquityHistory());
+			window.addEventListener("resize", () => {
+				loadEquityHistory();
+				redrawTradeDiagnosticsCharts();
+			});
 
 			/* ═══════════════════════════════════════════════════════════
 			   TRADING MODE SWITCH

@@ -34,6 +34,129 @@ class TradeExecutor:
         self._rebuild_sector_counts()
         self.journal = TradeJournal()
 
+    def _get_recent_fill(self, symbol: str, side: str) -> tuple[dt.datetime | None, float | None]:
+        """Return the most recent filled order time/price for *symbol* and *side*."""
+        try:
+            recent = self.broker.api.list_orders(
+                status="closed",
+                symbols=[symbol],
+                limit=20,
+                direction="desc",
+            )
+            for order in recent:
+                if order.side != side or not getattr(order, "filled_at", None):
+                    continue
+                filled_at = getattr(order, "filled_at")
+                if isinstance(filled_at, str):
+                    filled_at = dt.datetime.fromisoformat(filled_at.replace("Z", "+00:00"))
+                fill_price = float(getattr(order, "filled_avg_price", 0) or 0)
+                return filled_at, (fill_price if fill_price > 0 else None)
+        except Exception as exc:
+            log.debug("Could not fetch recent fill for %s (%s): %s", symbol, side, exc)
+        return None, None
+
+    def _reconcile_open_positions(self, positions: list | None = None) -> None:
+        """Backfill PDT/journal state for positions that filled outside the direct entry path."""
+        try:
+            positions = positions if positions is not None else self.broker.get_positions()
+            tracked_symbols = set(self.pdt.open_symbols())
+            journal_symbols = {row["symbol"] for row in self.journal.get_open_trades()}
+        except Exception as exc:
+            log.warning("Open-position reconcile failed to gather state: %s", exc)
+            return
+
+        for pos in positions:
+            symbol = pos.symbol
+            qty = float(pos.qty)
+            abs_qty = abs(qty)
+            is_short = qty < 0
+            side = "short" if is_short else ("inverse" if symbol in config.INVERSE_WATCHLIST else "long")
+            order_side = "sell" if is_short else "buy"
+            fill_dt, fill_price = self._get_recent_fill(symbol, order_side)
+            entry_price = fill_price or float(pos.avg_entry_price)
+            regime = "bear" if side in ("short", "inverse") else "bull"
+
+            if symbol not in tracked_symbols:
+                self.pdt.record_buy(symbol, fill_date=fill_dt.date() if fill_dt else None)
+                if fill_dt is not None:
+                    self.pdt._buy_times[symbol] = fill_dt.isoformat()
+                    self.pdt._save()
+                log.warning("Reconcile: backfilled PDT entry for %s %s", side.upper(), symbol)
+
+            if symbol not in journal_symbols:
+                self.journal.record_entry(
+                    symbol,
+                    side,
+                    entry_price,
+                    abs_qty,
+                    0.0,
+                    0.0,
+                    {"price": entry_price, "score": 0, "reason": "reconciled_live_fill"},
+                    regime=regime,
+                    vwap_used=False,
+                    order_type="reconciled",
+                )
+                log.warning("Reconcile: backfilled journal entry for %s %s", side.upper(), symbol)
+
+    def _finalize_entry(
+        self,
+        *,
+        symbol: str,
+        sector: str,
+        side: str,
+        requested_entry_price: float,
+        qty: float,
+        stop_loss: float,
+        take_profit: float,
+        signal: dict,
+        regime: str,
+        order_type: str,
+        vwap_used: bool,
+        order=None,
+    ) -> int:
+        """Record PDT/journal state only after a new position is actually visible."""
+        fill_side = "sell" if side == "short" else "buy"
+        filled_price = self._poll_fill_price(order) if order is not None else None
+
+        if filled_price is None:
+            try:
+                position = self.broker.get_position(symbol)
+            except Exception:
+                position = None
+            if position is not None:
+                filled_price = float(position.avg_entry_price)
+
+        if filled_price is None:
+            log.info(
+                "ENTRY PENDING %s %s — order accepted but not filled yet. "
+                "Deferring PDT/journal accounting until reconciliation.",
+                side.upper(), symbol,
+            )
+            return 0
+
+        fill_dt, recent_fill_price = self._get_recent_fill(symbol, fill_side)
+        actual_entry_price = recent_fill_price or filled_price or requested_entry_price
+
+        self.pdt.record_buy(symbol, fill_date=fill_dt.date() if fill_dt else None)
+        if fill_dt is not None:
+            self.pdt._buy_times[symbol] = fill_dt.isoformat()
+            self.pdt._save()
+        self.risk.open_positions += 1
+        self._sector_counts[sector] = self._sector_counts.get(sector, 0) + 1
+        self.journal.record_entry(
+            symbol,
+            side,
+            actual_entry_price,
+            qty,
+            stop_loss,
+            take_profit,
+            signal,
+            regime=regime,
+            vwap_used=vwap_used,
+            order_type=order_type,
+        )
+        return 1
+
     def _poll_fill_price(self, order, timeout_secs: float = 5.0) -> float | None:
         """Poll an order for its filled_avg_price (market orders fill fast)."""
         if order is None:
@@ -73,6 +196,7 @@ class TradeExecutor:
         """Refresh equity / position count before each cycle."""
         self._init_risk_manager()
         self._rebuild_sector_counts()
+        self._reconcile_open_positions()
 
     def _rebuild_sector_counts(self) -> None:
         """Rebuild sector exposure counts from current positions."""
@@ -146,6 +270,7 @@ class TradeExecutor:
         spy_df = None
         self._hmm_regime = None    # raw HMM result dict
         self._hmm_chop = False     # True when HMM detects chop regime
+        self._hmm_bear_raw = False # True when HMM reports BEAR *before* overrides
 
         if not config.MARKET_REGIME_ENABLED:
             log.debug("Market regime filter disabled — defaulting to bull mode")
@@ -194,13 +319,82 @@ class TradeExecutor:
                         chop_thresh = getattr(config, "HMM_CHOP_THRESHOLD", 0.50)
 
                         if bear_prob >= bear_thresh:
-                            bear_market = True
-                            hmm_decided = True
-                            log.info(
-                                "REGIME [HMM]: BEAR — P(BEAR)=%.2f  P(CHOP)=%.2f  P(BULL)=%.2f  "
-                                "(threshold=%.2f)",
-                                bear_prob, chop_prob, bull_prob, bear_thresh,
-                            )
+                            # ── Price confirmation: require SPY below EMA-200 ──
+                            # HMM can lag during fast recoveries. If SPY is already
+                            # above its 200-day EMA, don't declare a full BEAR
+                            # (which would trigger inverse ETF buying). Downgrade
+                            # to CHOP instead — reduced sizing, no inverse ETFs.
+                            hmm_called_bear = True
+                            self._hmm_bear_raw = True
+                            try:
+                                _spy_indicators = compute_all(spy_df)
+                                _spy_row = _spy_indicators.iloc[-1]
+                                _spy_close = float(_spy_row["close"])
+                                _spy_ema200 = float(_spy_row.get("ema_200", 0) or 0)
+
+                                # ── Momentum override ──────────────────────────
+                                # If SPY has recovered strongly in recent days,
+                                # the HMM is lagging — downgrade BEAR to CHOP to
+                                # prevent inverse ETF entries during a recovery.
+                                _mom_days = getattr(config, "HMM_MOMENTUM_OVERRIDE_DAYS", 3)
+                                _mom_pct  = getattr(config, "HMM_MOMENTUM_OVERRIDE_PCT", 0.015)
+                                _override_enabled = getattr(config, "HMM_MOMENTUM_OVERRIDE_ENABLED", True)
+                                _recent_return = 0.0
+                                if len(_spy_indicators) > _mom_days:
+                                    _past_close = float(_spy_indicators["close"].iloc[-(_mom_days + 1)])
+                                    if _past_close > 0:
+                                        _recent_return = (_spy_close - _past_close) / _past_close
+                                momentum_override = _override_enabled and _recent_return > _mom_pct
+
+                                # Both the momentum override and the EMA-200 override are
+                                # controlled by the single HMM_MOMENTUM_OVERRIDE_ENABLED flag
+                                # so the dashboard "Override Enabled" toggle disables both.
+
+                                if momentum_override:
+                                    self._hmm_chop = True
+                                    bear_market = False
+                                    hmm_decided = True
+                                    spy_df = _spy_indicators
+                                    log.warning(
+                                        "REGIME [HMM→CHOP override]: HMM P(BEAR)=%.2f but "
+                                        "SPY %d-day return=+%.1f%% (threshold +%.1f%%) — "
+                                        "market is recovering. No inverse ETFs, reduced sizing.",
+                                        bear_prob, _mom_days, _recent_return * 100, _mom_pct * 100,
+                                    )
+                                elif _override_enabled and _spy_ema200 > 0 and _spy_close > _spy_ema200:
+                                    # HMM says BEAR but price is above EMA-200 — contradiction.
+                                    # Only fires when HMM_EMA200_OVERRIDE_ENABLED = True.
+                                    self._hmm_chop = True
+                                    bear_market = False
+                                    hmm_decided = True
+                                    spy_df = _spy_indicators
+                                    log.warning(
+                                        "REGIME [HMM→CHOP override]: HMM P(BEAR)=%.2f but "
+                                        "SPY $%.2f > EMA-200 $%.2f — price action disagrees. "
+                                        "Downgrading to CHOP (no inverse ETFs, reduced sizing).",
+                                        bear_prob, _spy_close, _spy_ema200,
+                                    )
+                                else:
+                                    bear_market = True
+                                    hmm_decided = True
+                                    spy_df = _spy_indicators
+                                    log.info(
+                                        "REGIME [HMM]: BEAR — P(BEAR)=%.2f  P(CHOP)=%.2f  P(BULL)=%.2f  "
+                                        "(threshold=%.2f, SPY $%.2f < EMA-200 $%.2f confirmed, "
+                                        "%d-day return=%.1f%%)",
+                                        bear_prob, chop_prob, bull_prob, bear_thresh,
+                                        _spy_close, _spy_ema200,
+                                        _mom_days, _recent_return * 100,
+                                    )
+                            except Exception as _exc:
+                                log.debug("EMA-200 confirmation check failed: %s — accepting HMM BEAR", _exc)
+                                bear_market = True
+                                hmm_decided = True
+                                log.info(
+                                    "REGIME [HMM]: BEAR — P(BEAR)=%.2f  P(CHOP)=%.2f  P(BULL)=%.2f  "
+                                    "(threshold=%.2f)",
+                                    bear_prob, chop_prob, bull_prob, bear_thresh,
+                                )
                         elif chop_prob >= chop_thresh:
                             self._hmm_chop = True
                             hmm_decided = True
@@ -301,6 +495,31 @@ class TradeExecutor:
         qty = float(pos.qty)
         return qty < 0
 
+    def _get_hold_days(self, symbol: str) -> int:
+        """Return calendar days held, using PDT ledger with Alpaca order fallback."""
+        days = self.pdt.days_held(symbol)
+        if days is not None:
+            return days
+        # PDT ledger missing entry — fallback to Alpaca order history
+        try:
+            side = "buy"
+            recent = self.broker.api.list_orders(
+                status="closed", symbols=[symbol], limit=20, direction="desc"
+            )
+            for order in recent:
+                if order.side == side and getattr(order, "filled_at", None):
+                    filled_at = getattr(order, "filled_at")
+                    if isinstance(filled_at, str):
+                        filled_at = dt.datetime.fromisoformat(filled_at.replace("Z", "+00:00"))
+                    fill_date = filled_at.date()
+                    # Backfill PDT ledger so future lookups succeed
+                    self.pdt.record_buy(symbol, fill_date=fill_date)
+                    log.info("Backfilled PDT ledger for %s from Alpaca order (filled %s)", symbol, fill_date)
+                    return (dt.date.today() - fill_date).days
+        except Exception as exc:
+            log.warning("Could not fetch order history for %s hold days: %s", symbol, exc)
+        return 0
+
     # ─────────────────────────────────────────────────────────
     # EXIT SCAN – check existing positions for exit signals
     # ─────────────────────────────────────────────────────────
@@ -312,8 +531,13 @@ class TradeExecutor:
         Returns the number of positions closed.
         """
         positions = self.broker.get_positions()
+        self._reconcile_open_positions(positions)
         active_symbols = {p.symbol for p in positions}
         self.pdt.cleanup_stale(active_symbols)
+
+        # Reconcile any stop/TP fills that happened between cycles so the
+        # journal is up-to-date before we evaluate current positions.
+        self._reconcile_closed_trades()
 
         closed = 0
         for pos in positions:
@@ -343,13 +567,13 @@ class TradeExecutor:
 
             entry_price = float(pos.avg_entry_price)
             current_price = float(pos.current_price)
-            hold_days = self.pdt.days_held(symbol) or 0
+            hold_days = self._get_hold_days(symbol)
 
             # Use the appropriate exit checker for long vs short
             if is_short:
                 signal = check_short_exit(df, entry_price, hold_days=hold_days, explain=True)
             else:
-                signal = check_exit(df, entry_price, hold_days=hold_days, explain=True)
+                signal = check_exit(df, entry_price, hold_days=hold_days, explain=True, symbol=symbol)
 
             if signal.get("should_exit"):
                 action_word = "COVER" if is_short else "EXIT"
@@ -460,8 +684,13 @@ class TradeExecutor:
 
         Uses ATR-based dynamic stops: stop = high − (ATR × mult).
         Falls back to static percentage if ATR is unavailable.
+
+        A profit-locking floor guarantees the stop never gives back more
+        than a configured fraction of the unrealised gain, regardless of
+        where the ATR-based Chandelier stop lands.
         """
         symbol = pos.symbol
+        entry_price = float(pos.avg_entry_price)
 
         # Determine which trailing stop tier applies
         if unrealised_pct >= config.TRAILING_STOP_TIGHT_ACTIVATE:
@@ -498,12 +727,33 @@ class TradeExecutor:
         except Exception as exc:
             log.debug("ATR lookup failed for %s trailing stop: %s", symbol, exc)
 
+        # De-scale ATR for leveraged ETFs (3× ETF has ~3× ATR of underlying)
+        atr_val = config.descale_atr(atr_val, symbol)
+
         if atr_val > 0:
             ideal_stop = round(current_price - atr_mult * atr_val, 2)
             trail_label = f"ATR×{atr_mult}"
         else:
             ideal_stop = round(current_price * (1 - fallback_pct), 2)
             trail_label = f"{fallback_pct*100:.1f}%"
+
+        # ── Profit-locking floor ─────────────────────────────
+        # Never let the stop give back more than half the unrealised gain.
+        # This prevents the ATR-based stop from sitting far below when a
+        # stock has run up significantly (e.g. 13% gain but stop 9% below).
+        unrealised_gain = current_price - entry_price
+        if unrealised_gain > 0:
+            # Lock in at least 50% of gain (break-even minimum)
+            profit_floor = round(entry_price + unrealised_gain * 0.50, 2)
+            if ideal_stop < profit_floor:
+                log.debug(
+                    "%s: ATR stop %.2f below profit floor %.2f "
+                    "(entry=%.2f, gain=%.2f) — raising",
+                    symbol, ideal_stop, profit_floor,
+                    entry_price, unrealised_gain,
+                )
+                ideal_stop = profit_floor
+                trail_label += "+floor"
 
         if existing_stop is not None:
             current_stop = float(existing_stop.stop_price)
@@ -603,6 +853,49 @@ class TradeExecutor:
                     "BEAR MARKET — equity $%.2f < $%.2f and no INVERSE_WATCHLIST configured "
                     "— skipping all entries (cannot short or buy inverse ETFs).",
                     equity, short_min_equity,
+                )
+                return 0
+
+        # ── HMM BEAR override guard ────────────────────────
+        # When the HMM reported BEAR but overrides downgraded to CHOP,
+        # do NOT switch to long mode.  The overrides prevent inverse/short
+        # entries (price action disagrees), but we must also block long
+        # entries because the HMM still says the market is bearish.
+        # Sit on cash until the regime resolves.
+        if getattr(self, '_hmm_bear_raw', False) and not bear_market:
+            log.warning(
+                "HMM detected BEAR regime (overridden to CHOP) — "
+                "blocking ALL new entries. Will not open longs while "
+                "HMM signals BEAR. Waiting for regime to resolve."
+            )
+            return 0
+
+        # ── Portfolio conflict guard ──────────────────────────
+        # Never hold inverse ETFs and regular longs simultaneously.
+        inverse_set = set(getattr(config, 'INVERSE_WATCHLIST', []))
+        if inverse_set:
+            current_positions = self.broker.get_positions()
+            held_inverse = [p.symbol for p in current_positions
+                           if p.symbol in inverse_set]
+            held_regular_long = [p.symbol for p in current_positions
+                                if p.symbol not in inverse_set
+                                and float(p.qty) > 0]
+
+            if use_inverse_etfs and held_regular_long:
+                log.warning(
+                    "MODE CONFLICT: Inverse ETF mode active but still holding "
+                    "regular long positions %s. Blocking new inverse entries "
+                    "until long positions are closed.",
+                    held_regular_long,
+                )
+                return 0
+
+            if not bear_market and held_inverse:
+                log.warning(
+                    "MODE CONFLICT: Bull/long mode active but still holding "
+                    "inverse ETF positions %s. Blocking new long entries "
+                    "until inverse positions are closed.",
+                    held_inverse,
                 )
                 return 0
 
@@ -805,8 +1098,8 @@ class TradeExecutor:
 
         entry_price = signal["price"]
         atr = signal["atr"]
-        stop_loss = self.risk.compute_stop_loss(entry_price, atr)
-        take_profit = self.risk.compute_take_profit(entry_price, atr)
+        stop_loss = self.risk.compute_stop_loss(entry_price, atr, symbol)
+        take_profit = self.risk.compute_take_profit(entry_price, atr, symbol)
 
         qty = self.risk.calculate_position_size(
             entry_price=entry_price,
@@ -848,12 +1141,18 @@ class TradeExecutor:
         )
 
         try:
+            order = None
             if use_vwap:
                 log.info(
                     "VWAP routing active for %s (ml_prob=%.3f >= %.2f) – "
                     "splitting into %d slices over %ds",
                     symbol, ml_prob, config.VWAP_ML_THRESHOLD,
                     config.VWAP_SLICES, config.VWAP_INTERVAL_SECONDS * config.VWAP_SLICES,
+                )
+                log.warning(
+                    "VWAP execution for %s is asynchronous — entry accounting will be "
+                    "deferred until fills are reconciled from live positions.",
+                    symbol,
                 )
                 self.broker.submit_vwap_buy(
                     symbol, qty,
@@ -863,19 +1162,23 @@ class TradeExecutor:
                     interval_seconds=config.VWAP_INTERVAL_SECONDS,
                 )
             else:
-                self.broker.submit_market_buy(
+                order = self.broker.submit_market_buy(
                     symbol, qty, stop_loss=stop_loss, take_profit=take_profit
                 )
-            self.pdt.record_buy(symbol)
-            self.risk.open_positions += 1
-            self._sector_counts[sector] = self._sector_counts.get(sector, 0) + 1
-            self.journal.record_entry(
-                symbol, "long", entry_price, qty, stop_loss, take_profit,
-                signal, regime="bull",
-                vwap_used=use_vwap,
+            return self._finalize_entry(
+                symbol=symbol,
+                sector=sector,
+                side="long",
+                requested_entry_price=entry_price,
+                qty=qty,
+                stop_loss=stop_loss,
+                take_profit=take_profit,
+                signal=signal,
+                regime="bull",
                 order_type="vwap" if use_vwap else "market",
+                vwap_used=use_vwap,
+                order=order,
             )
-            return 1
         except Exception as exc:
             log.error("Buy order failed for %s: %s", symbol, exc)
             return 0
@@ -911,8 +1214,8 @@ class TradeExecutor:
 
         entry_price = signal["price"]
         atr = signal["atr"]
-        stop_loss = self.risk.compute_stop_loss(entry_price, atr)
-        take_profit = self.risk.compute_take_profit(entry_price, atr)
+        stop_loss = self.risk.compute_stop_loss(entry_price, atr, symbol)
+        take_profit = self.risk.compute_take_profit(entry_price, atr, symbol)
 
         qty = self.risk.calculate_position_size(
             entry_price=entry_price,
@@ -953,17 +1256,23 @@ class TradeExecutor:
         )
 
         try:
-            self.broker.submit_market_buy(
+            order = self.broker.submit_market_buy(
                 symbol, qty, stop_loss=stop_loss, take_profit=take_profit
             )
-            self.pdt.record_buy(symbol)
-            self.risk.open_positions += 1
-            self._sector_counts[sector] = self._sector_counts.get(sector, 0) + 1
-            self.journal.record_entry(
-                symbol, "inverse", entry_price, qty, stop_loss, take_profit,
-                signal, regime="bear", vwap_used=False, order_type="market",
+            return self._finalize_entry(
+                symbol=symbol,
+                sector=sector,
+                side="inverse",
+                requested_entry_price=entry_price,
+                qty=qty,
+                stop_loss=stop_loss,
+                take_profit=take_profit,
+                signal=signal,
+                regime="bear",
+                order_type="market",
+                vwap_used=False,
+                order=order,
             )
-            return 1
         except Exception as exc:
             log.error("Inverse ETF buy order failed for %s: %s", symbol, exc)
             return 0
@@ -989,8 +1298,8 @@ class TradeExecutor:
         entry_price = signal["price"]
         atr = signal["atr"]
         # For shorts: stop is ABOVE entry, target is BELOW entry
-        stop_loss = self.risk.compute_short_stop_loss(entry_price, atr)
-        take_profit = self.risk.compute_short_take_profit(entry_price, atr)
+        stop_loss = self.risk.compute_short_stop_loss(entry_price, atr, symbol)
+        take_profit = self.risk.compute_short_take_profit(entry_price, atr, symbol)
 
         qty = self.risk.calculate_short_position_size(
             entry_price=entry_price,
@@ -1030,17 +1339,23 @@ class TradeExecutor:
         )
 
         try:
-            self.broker.submit_short_sell(
+            order = self.broker.submit_short_sell(
                 symbol, qty, stop_loss=stop_loss, take_profit=take_profit
             )
-            self.pdt.record_buy(symbol)
-            self.risk.open_positions += 1
-            self._sector_counts[sector] = self._sector_counts.get(sector, 0) + 1
-            self.journal.record_entry(
-                symbol, "short", entry_price, qty, stop_loss, take_profit,
-                signal, regime="bear", vwap_used=False, order_type="market",
+            return self._finalize_entry(
+                symbol=symbol,
+                sector=sector,
+                side="short",
+                requested_entry_price=entry_price,
+                qty=qty,
+                stop_loss=stop_loss,
+                take_profit=take_profit,
+                signal=signal,
+                regime="bear",
+                order_type="market",
+                vwap_used=False,
+                order=order,
             )
-            return 1
         except Exception as exc:
             log.error("Short sell order failed for %s: %s", symbol, exc)
             return 0
@@ -1056,19 +1371,24 @@ class TradeExecutor:
            (fractional stop orders use time_in_force="day" and expire daily).
         2. Clean up stale PDT ledger entries.
         3. Log the day-trade budget remaining.
+        4. Reconcile any stop-loss / take-profit fills that happened
+           outside of scan_exits (between cycles, overnight, etc.).
         """
         log.info("--- Morning tasks start ---")
 
-        # 1. Stop-loss resubmission
+        # 1. Reconcile bracket/stop fills that occurred outside of scan_exits
+        self._reconcile_closed_trades()
+
+        # 2. Stop-loss resubmission
         n = self.broker.resubmit_stop_losses(self.pdt)
         if n:
             log.info("Morning tasks: resubmitted %d stop-loss order(s)", n)
 
-        # 2. Ledger hygiene
+        # 3. Ledger hygiene
         active = {p.symbol for p in self.broker.get_positions()}
         self.pdt.cleanup_stale(active)
 
-        # 3. PDT budget report
+        # 4. PDT budget report
         used = self.pdt._rolling_day_trade_count()
         remaining = max(0, config.MAX_DAY_TRADES_ALLOWED - used)
         log.info(
@@ -1077,6 +1397,106 @@ class TradeExecutor:
         )
 
         log.info("--- Morning tasks done ---")
+
+    def _reconcile_closed_trades(self) -> None:
+        """
+        Journal any stop-loss, take-profit, or broker-initiated fills that
+        closed a position outside of scan_exits (e.g. between cycles or
+        overnight).  Runs once per morning and at the start of each
+        scan_exits to keep the journal current.
+
+        For each open journal row where the position no longer exists in
+        Alpaca, look up the most recent closed sell/buy-cover order for that
+        symbol, compute P&L, and call record_exit().
+        """
+        try:
+            open_rows = self.journal.get_open_trades()
+        except Exception as exc:
+            log.warning("Reconcile: could not fetch open journal rows: %s", exc)
+            return
+
+        if not open_rows:
+            return
+
+        held_symbols = {p.symbol for p in self.broker.get_positions()}
+
+        for row in open_rows:
+            symbol = row["symbol"]
+            # Still holding — nothing to reconcile
+            if symbol in held_symbols:
+                continue
+
+            entry_price = float(row["entry_price"] or 0)
+            qty = float(row["qty"] or 0)
+            side = row["side"]  # 'long', 'short', 'inverse'
+            is_short = side == "short"
+
+            # Find the most recent closed fill on the exit side
+            exit_side = "buy" if is_short else "sell"
+            fill_price: float | None = None
+            exit_reason = "stop_or_tp"
+            try:
+                recent = self.broker.api.list_orders(
+                    status="closed",
+                    symbols=[symbol],
+                    limit=10,
+                    direction="desc",
+                )
+                for o in recent:
+                    if o.side == exit_side and getattr(o, "filled_at", None):
+                        fp = float(getattr(o, "filled_avg_price", 0) or 0)
+                        if fp > 0:
+                            fill_price = fp
+                            # Try to infer exit reason from order type
+                            o_type = getattr(o, "type", "")
+                            if o_type in ("stop", "stop_limit"):
+                                exit_reason = "stop_loss"
+                            elif o_type in ("limit",):
+                                exit_reason = "take_profit"
+                            elif o_type == "trailing_stop":
+                                exit_reason = "trailing_stop"
+                            break
+            except Exception as exc:
+                log.warning("Reconcile: could not fetch orders for %s: %s", symbol, exc)
+                continue
+
+            if fill_price is None or fill_price <= 0:
+                log.debug(
+                    "Reconcile: %s has open journal row but no closed fill found — "
+                    "skipping (may have been manually closed or data unavailable)",
+                    symbol,
+                )
+                continue
+
+            if is_short:
+                pnl = (entry_price - fill_price) * qty
+            else:
+                pnl = (fill_price - entry_price) * qty
+
+            entry_time = row.get("entry_time", "")
+            entry_date = entry_time[:10] if entry_time else ""
+            hold_days = 0
+            try:
+                if entry_date:
+                    hold_days = (dt.date.today() - dt.date.fromisoformat(entry_date)).days
+            except Exception:
+                pass
+
+            try:
+                self.journal.record_exit(
+                    symbol,
+                    exit_price=fill_price,
+                    pnl=round(pnl, 4),
+                    hold_days=hold_days,
+                    exit_reason=exit_reason,
+                    filled_price=fill_price,
+                )
+                log.info(
+                    "Reconcile: journaled %s exit for %s  fill=%.2f  pnl=%.4f  reason=%s",
+                    side.upper(), symbol, fill_price, pnl, exit_reason,
+                )
+            except Exception as exc:
+                log.warning("Reconcile: failed to journal exit for %s: %s", symbol, exc)
 
     # ─────────────────────────────────────────────────────────
     # FULL CYCLE

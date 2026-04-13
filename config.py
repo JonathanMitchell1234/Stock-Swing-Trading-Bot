@@ -67,8 +67,8 @@ MACD_SIGNAL = 9
 
 # ATR (for stops and position sizing)
 ATR_PERIOD = 14
-ATR_STOP_MULTIPLIER = 3.0    # stop loss = entry − ATR * mult (wide to survive noise)
-ATR_PROFIT_MULTIPLIER = 7.0  # raised from 6.0 — let winners run further (improves profit factor)
+ATR_STOP_MULTIPLIER = 2.0    # stop loss = entry − ATR * mult
+ATR_PROFIT_MULTIPLIER = 3.0  # realistic swing target (was 7.0 — unreachable)
 
 # Volume confirmation
 VOLUME_SMA_PERIOD = 20
@@ -128,7 +128,10 @@ HMM_REGIME_ENABLED = True           # use HMM for regime detection (falls back t
 HMM_BEAR_THRESHOLD = 0.60           # if P(BEAR) >= this → declare bear market
 HMM_CHOP_THRESHOLD = 0.50           # if P(CHOP) >= this → declare choppy (reduces sizing)
 HMM_CHOP_SIZE_SCALE = 0.65          # position size scale in chop regime
-HMM_LOOKBACK = 30                   # days of recent data to feed into HMM prediction
+HMM_LOOKBACK = 10                   # days of recent data to feed into HMM (shorter = faster to flip)
+HMM_MOMENTUM_OVERRIDE_ENABLED = True  # enable all BEAR→CHOP overrides (momentum + EMA-200 price confirmation)
+HMM_MOMENTUM_OVERRIDE_DAYS = 3     # look back this many days for the momentum override
+HMM_MOMENTUM_OVERRIDE_PCT  = 0.015 # if SPY N-day return > this, downgrade BEAR → CHOP (no inverse ETFs)
 HMM_TRAINING_MONTHS = 36            # months of SPY history for training
 HMM_N_STATES = 3                    # hidden states (2=bull/bear, 3=bull/bear/chop)
 HMM_VOL_WINDOW = 5                  # rolling window for realised volatility feature (short = sharper signal)
@@ -176,6 +179,27 @@ INVERSE_WATCHLIST = [
     "SPXS",   # Direxion Daily S&P 500 Bear 3×
     "SOXS",   # Direxion Daily Semiconductor Bear 3×
 ]
+
+# ── Leveraged / Inverse ETF decay protection ──────────────
+# Leveraged ETFs suffer from volatility decay (beta slippage) when held
+# overnight due to daily rebalancing.  The bot enforces a max hold
+# duration and tighter stop losses proportional to the leverage factor.
+LEVERAGED_ETF_MAX_HOLD = True       # enforce time-based hard exit
+LEVERAGED_ETF_SYMBOLS = {
+    # symbol → leverage factor (used to scale max hold & stops)
+    # 3× leveraged / inverse
+    "TQQQ": 3, "SQQQ": 3, "SPXU": 3, "SPXS": 3, "SDOW": 3,
+    "SOXL": 3, "SOXS": 3, "TZA": 3, "TNA": 3, "LABU": 3, "LABD": 3,
+    "FAS": 3, "FAZ": 3, "ERX": 3, "ERY": 3,
+    # 2× leveraged / inverse
+    "SDS": 2, "QID": 2, "SSO": 2, "QLD": 2,
+    # 1× inverse (no leverage decay, but still decays over months)
+    "SH": 1, "PSQ": 1, "RWM": 1,
+}
+# Max hold days by leverage: 3× → 2 days, 2× → 3 days, 1× → 5 days
+LEVERAGED_MAX_HOLD_DAYS = {3: 2, 2: 3, 1: 5}
+# Tighter max-loss cap for leveraged ETFs (per leverage tier)
+LEVERAGED_MAX_LOSS_PCT = {3: -0.05, 2: -0.06, 1: -0.08}
 
 # ── Portfolio Correlation Guard ────────────────────────────
 # Before approving a new entry, the bot calculates the 30-day Pearson
@@ -271,13 +295,18 @@ MARKET_OPEN_DELAY_MINUTES = 30      # 0 = no delay (enter as soon as market open
 # ─────────────────────────────────────────────
 # Risk Management
 # ─────────────────────────────────────────────
+STARTING_EQUITY = 1_000.0         # initial account equity (for drawdown calcs; excludes later deposits)
 MAX_OPEN_POSITIONS = 10           # hard cap (overridden for small accounts)
 MAX_POSITION_PCT = 0.15           # max 15% of equity per position
 MAX_PORTFOLIO_RISK_PCT = 0.06     # max 6% total portfolio at risk
 MAX_LOSS_PER_TRADE_PCT = 0.02     # risk at most 2% of equity per trade
 MAX_PORTFOLIO_EXPOSURE_PCT = 0.95  # never use more than 95% buying power
-TRAILING_STOP_ACTIVATE_PCT = 0.06  # activate trailing stop after 6% gain
-TRAILING_STOP_PCT = 0.04          # 4% trailing stop on winners (fallback when ATR unavailable)
+MAX_LOSS_EXIT_PCT = -0.08         # hard exit if unrealised loss exceeds -8% (prevents deep bleeders)
+
+# ── Trend integrity: block long entries in broken trends ────
+ENTRY_MOMENTUM_DECAY_BLOCK = -0.03  # block entry if price < EMA-50 AND momentum < -3%
+TRAILING_STOP_ACTIVATE_PCT = 0.04  # activate trailing stop after 4% gain
+TRAILING_STOP_PCT = 0.025         # 2.5% trailing stop on winners (fallback when ATR unavailable)
 
 # ── ATR-based (Chandelier Exit) trailing stop ────────────────
 # Dynamic stop = highest_price − (ATR × multiplier)
@@ -286,15 +315,15 @@ ATR_TRAILING_STOP_MULT = 1.5         # standard Chandelier multiplier
 ATR_TRAILING_STOP_TIGHT_MULT = 1.0   # tighter multiplier once profit exceeds tight threshold
 
 # ── Adaptive stop: tighten trailing stop as profit grows ─────
-TRAILING_STOP_TIGHT_ACTIVATE = 0.15  # above 15% profit, tighten
-TRAILING_STOP_TIGHT_PCT = 0.03       # to 3% trailing stop (fallback when ATR unavailable)
+TRAILING_STOP_TIGHT_ACTIVATE = 0.08  # above 8% profit, tighten
+TRAILING_STOP_TIGHT_PCT = 0.02       # to 2% trailing stop (fallback when ATR unavailable)
 
 # ── Small-account overrides (auto-applied when equity < SMALL_ACCOUNT_THRESHOLD)
 SMALL_MAX_OPEN_POSITIONS = 3       # concentrate with tiny capital
 SMALL_MAX_POSITION_PCT = 0.45      # up to 45% per position (need size)
 SMALL_MAX_LOSS_PER_TRADE_PCT = 0.03  # 3% risk (tolerate more to get in)
 SMALL_ATR_STOP_MULTIPLIER = 2.0    # tighter stops to limit $ loss
-SMALL_ATR_PROFIT_MULTIPLIER = 4.0  # corresponding tighter targets
+SMALL_ATR_PROFIT_MULTIPLIER = 3.0  # realistic swing target
 
 # ─────────────────────────────────────────────
 # Stock Universe / Screener Filters
@@ -441,6 +470,24 @@ def get_atr_profit_mult(equity: float) -> float:
     if equity < SMALL_ACCOUNT_THRESHOLD:
         return SMALL_ATR_PROFIT_MULTIPLIER
     return ATR_PROFIT_MULTIPLIER
+
+
+def get_leverage_factor(symbol: str) -> int:
+    """Return leverage factor for a symbol (1 for non-leveraged)."""
+    return LEVERAGED_ETF_SYMBOLS.get(symbol, 0)
+
+
+def descale_atr(atr: float, symbol: str) -> float:
+    """De-scale ATR for leveraged ETFs so stops/targets reflect underlying volatility.
+
+    A 3× ETF has ~3× the ATR of its underlying.  Using raw ATR × stop_mult
+    produces irresponsibly wide stops.  Dividing by the leverage factor
+    normalises the ATR before applying multipliers.
+    """
+    lev = get_leverage_factor(symbol)
+    if lev > 1:
+        return atr / lev
+    return atr
 
 
 # ─────────────────────────────────────────────────────────────

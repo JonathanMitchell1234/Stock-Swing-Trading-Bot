@@ -28,12 +28,20 @@ log = get_logger("main")
 
 # Global reference for graceful shutdown
 _executor: TradeExecutor | None = None
+_news_monitor: NewsMonitor | None = None
 
 
 def _graceful_shutdown(signum, frame):
     """Save PDT ledger and exit cleanly on SIGTERM/SIGINT."""
     sig_name = signal.Signals(signum).name if hasattr(signal, "Signals") else str(signum)
     log.info("Received %s – saving PDT ledger and shutting down...", sig_name)
+    global _news_monitor
+    if _news_monitor is not None:
+        try:
+            _news_monitor.stop()
+            log.info("News monitor stopped successfully")
+        except Exception as exc:
+            log.error("Failed to stop news monitor: %s", exc)
     if _executor is not None:
         try:
             _executor.pdt._save()
@@ -117,7 +125,9 @@ def run_loop() -> None:
     _executor = executor
 
     # Start the live news ejection shield (no-op if disabled in config)
-    news_monitor = NewsMonitor(executor.broker)
+    news_monitor = NewsMonitor(executor.broker, executor.pdt)
+    global _news_monitor
+    _news_monitor = news_monitor
     news_monitor.start()
 
     _morning_done_date: list[dt.date] = [None]  # mutable container for closure

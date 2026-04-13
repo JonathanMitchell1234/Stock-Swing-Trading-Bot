@@ -80,8 +80,21 @@ class FinBERTSentiment:
                 self.pipeline = pipeline(**pipeline_kwargs)
             except Exception as e:
                 if "torch_dtype" in pipeline_kwargs:
-                    log.warning("FinBERT FP16 init failed (%s). Retrying in float32.", e)
+                    # FP16 launch can fail due to CUDA allocator timing issues
+                    # (NVML assert), driver bugs, or unsupported GPU. Always
+                    # retry in FP32 so the bot doesn't crash on startup.
+                    log.warning(
+                        "FinBERT FP16 init failed (%s). Retrying in float32.", e
+                    )
                     pipeline_kwargs.pop("torch_dtype", None)
+                    try:
+                        # Also clear the CUDA cache before the FP32 retry to
+                        # release any partially-allocated memory from the FP16 attempt.
+                        import torch as _torch
+                        if _torch.cuda.is_available():
+                            _torch.cuda.empty_cache()
+                    except Exception:
+                        pass
                     self.pipeline = pipeline(**pipeline_kwargs)
                 else:
                     raise
@@ -97,9 +110,20 @@ class FinBERTSentiment:
             return 0.0
             
         try:
-            results = self.pipeline(headlines)
+            import torch
+            with torch.no_grad():
+                results = self.pipeline(
+                    headlines,
+                    truncation=True,
+                    max_length=512,
+                    batch_size=1,
+                )
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
         except Exception as e:
             log.error("FinBERT model evaluation failed: %s", e)
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
             return 0.0
             
         scores = []

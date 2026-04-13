@@ -984,8 +984,10 @@ class Backtester:
 
                 entry_price = self._apply_slippage(signal["price"], "BUY")
                 atr = signal["atr"]
-                stop_loss = round(entry_price - atr * atr_stop_mult, 2)
-                take_profit = round(entry_price + atr * atr_profit_mult, 2)
+                # De-scale ATR for leveraged ETFs before applying multipliers
+                eff_atr = config.descale_atr(atr, symbol)
+                stop_loss = round(entry_price - eff_atr * atr_stop_mult, 2)
+                take_profit = round(entry_price + eff_atr * atr_profit_mult, 2)
 
                 qty = self._size_position(entry_price, stop_loss, date)
 

@@ -118,14 +118,16 @@ def get_vol_window() -> int:
 
 def predict_regime(
     spy_df: pd.DataFrame,
-    lookback: int = 30,
+    lookback: int = 20,
 ) -> Optional[dict]:
     """
     Predict the current market regime from recent SPY daily bars.
 
     Parameters:
         spy_df   : DataFrame with at least `close` column (daily bars, chronological)
-        lookback : number of recent bars to feed into the HMM prediction
+        lookback : number of recent bars to feed into the HMM (default 20).
+                   Shorter = more responsive to regime changes. 30 bars in a
+                   prolonged correction make it very slow to flip back to BULL.
 
     Returns a dict:
         {
@@ -176,15 +178,17 @@ def predict_regime(
         if _scaler is not None:
             X = _scaler.transform(X)
 
-        # Predict probabilities for the most recent observation using
-        # the full recent sequence (Viterbi considers the sequence)
-        state_sequence = _model.predict(X)
-        current_state = int(state_sequence[-1])
+        # Use smoothed posteriors from forward-backward algorithm.
+        # For the final bar, posterior == filtered forward probability, so
+        # this is also the online (causal) estimate.
+        # Average the last 3 bars to reduce single-day noise while still
+        # reacting quickly to multi-day regime changes.
+        proba_matrix = _model.predict_proba(X)  # shape (T, n_states)
+        recent_window = min(3, len(proba_matrix))
+        current_proba = proba_matrix[-recent_window:].mean(axis=0)  # shape (n_states,)
 
-        # Get posterior probabilities for the last observation
-        # predict_proba returns per-sample state probabilities
-        proba_matrix = _model.predict_proba(X)
-        current_proba = proba_matrix[-1]  # shape (n_states,)
+        # Derive the most likely current state from the averaged posterior
+        current_state = int(np.argmax(current_proba))
 
         # Build result dict
         probabilities = {}

@@ -30,6 +30,7 @@ import json
 import os
 from pathlib import Path
 from typing import Dict, List, Optional
+import tempfile
 
 import config
 from logger import get_logger
@@ -72,13 +73,16 @@ class PDTGuard:
 
     def _save(self) -> None:
         LEDGER_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with open(LEDGER_PATH, "w") as f:
-            json.dump({
-                "ledger": self._ledger,
-                "day_trades": self._day_trades,
-                "sell_dates": self._sell_dates,
-                "buy_times": self._buy_times,
-            }, f, indent=2)
+        payload = {
+            "ledger": self._ledger,
+            "day_trades": self._day_trades,
+            "sell_dates": self._sell_dates,
+            "buy_times": self._buy_times,
+        }
+        with tempfile.NamedTemporaryFile("w", dir=LEDGER_PATH.parent, delete=False) as f:
+            json.dump(payload, f, indent=2)
+            tmp_name = f.name
+        os.replace(tmp_name, LEDGER_PATH)
 
     # ── reconciliation from Alpaca ────────────────────────────
     def _reconcile_from_alpaca(self, broker) -> None:
@@ -105,11 +109,19 @@ class PDTGuard:
                 log.info("PDT reconcile: no closed orders returned from Alpaca")
                 return
 
+            try:
+                positions = broker.get_positions()
+                current_positions = {p.symbol: float(p.qty) for p in positions}
+            except Exception as exc:
+                log.warning("PDT reconcile: could not fetch positions: %s", exc)
+                current_positions = {}
+
             # Group filled orders by (symbol, date, side)
             # We need to detect: which symbols were sold on which dates,
             # and which of those sells were day trades (buy + sell same day).
             buys_by_sym_date: Dict[str, Dict[str, str]] = {}   # symbol → {date_str: fill_time_iso}
             sells_by_sym_date: Dict[str, Dict[str, str]] = {}  # symbol → {date_str: fill_time_iso}
+            latest_fill_by_sym: Dict[str, tuple[str, str]] = {}  # symbol -> (date, side)
 
             for o in orders:
                 if o.status != "filled":
@@ -130,16 +142,21 @@ class PDTGuard:
                 elif o.side == "sell":
                     sells_by_sym_date.setdefault(sym, {})[fill_date_str] = fill_dt.isoformat()
 
+                latest = latest_fill_by_sym.get(sym)
+                if latest is None or fill_date_str >= latest[0]:
+                    latest_fill_by_sym[sym] = (fill_date_str, o.side)
+
             changed = False
 
             # 1. Rebuild sell_dates: for each symbol, record the most recent sell date
-            for sym, date_map in sells_by_sym_date.items():
-                latest_sell = max(date_map.keys())
+            for sym, (latest_fill_date, _latest_side) in latest_fill_by_sym.items():
+                if sym in current_positions:
+                    continue
                 existing = self._sell_dates.get(sym)
-                if existing is None or existing < latest_sell:
+                if existing is None or existing < latest_fill_date:
                     log.info("PDT reconcile: updating sell_date for %s: %s → %s",
-                             sym, existing, latest_sell)
-                    self._sell_dates[sym] = latest_sell
+                             sym, existing, latest_fill_date)
+                    self._sell_dates[sym] = latest_fill_date
                     changed = True
 
             # 2. Rebuild day_trades: a day trade = buy AND sell of same symbol on same date
@@ -160,22 +177,23 @@ class PDTGuard:
 
             # 3. Rebuild buy ledger from current positions + order history
             #    For symbols currently held, make sure we have a buy date
-            try:
-                positions = broker.get_positions()
-                held_symbols = {p.symbol for p in positions}
-                for sym in held_symbols:
-                    if sym not in self._ledger:
-                        # Find the most recent buy date for this symbol
-                        buy_dates_map = buys_by_sym_date.get(sym, {})
-                        if buy_dates_map:
-                            latest_buy = max(buy_dates_map.keys())
-                            log.info("PDT reconcile: adding missing ledger entry for %s bought on %s",
-                                     sym, latest_buy)
-                            self._ledger[sym] = latest_buy
-                            self._buy_times[sym] = buy_dates_map[latest_buy]
-                            changed = True
-            except Exception as exc:
-                log.warning("PDT reconcile: could not fetch positions: %s", exc)
+            for sym, qty in current_positions.items():
+                if sym in self._ledger:
+                    continue
+                if qty < 0:
+                    open_dates_map = sells_by_sym_date.get(sym, {})
+                    open_side = "short"
+                else:
+                    open_dates_map = buys_by_sym_date.get(sym, {})
+                    open_side = "long"
+                if not open_dates_map:
+                    continue
+                latest_open = max(open_dates_map.keys())
+                log.info("PDT reconcile: adding missing %s ledger entry for %s opened on %s",
+                         open_side, sym, latest_open)
+                self._ledger[sym] = latest_open
+                self._buy_times[sym] = open_dates_map[latest_open]
+                changed = True
 
             if changed:
                 self._save()
@@ -209,7 +227,7 @@ class PDTGuard:
         """Record the date and time a position was opened."""
         fill_date = fill_date or dt.date.today()
         self._ledger[symbol] = fill_date.isoformat()
-        self._buy_times[symbol] = dt.datetime.now().isoformat()
+        self._buy_times[symbol] = dt.datetime.now(dt.timezone.utc).isoformat()
         self._save()
         log.info("PDT ledger: recorded BUY  %s on %s", symbol, fill_date)
 
@@ -245,7 +263,9 @@ class PDTGuard:
             MIN_HOLD_MINUTES = 60
             buy_time_str = self._buy_times.get(symbol)
             if buy_time_str:
-                minutes_held = (dt.datetime.now() - dt.datetime.fromisoformat(buy_time_str)).total_seconds() / 60
+                buy_time = dt.datetime.fromisoformat(buy_time_str)
+                now = dt.datetime.now(buy_time.tzinfo) if buy_time.tzinfo else dt.datetime.now()
+                minutes_held = (now - buy_time).total_seconds() / 60
                 if minutes_held < MIN_HOLD_MINUTES:
                     log.warning(
                         "PDT BLOCK: cannot sell %s — only held %.0f min (min=%d min)",
@@ -315,10 +335,13 @@ class PDTGuard:
         return list(self._ledger.keys())
 
     def cleanup_stale(self, active_symbols: set[str]) -> None:
-        """Remove ledger entries for symbols no longer held."""
+        """Convert externally closed positions into recorded sells.
+
+        Symbols can disappear from positions when a close happens outside the
+        executor path, such as a dashboard/manual close or a news-triggered
+        ejection. Treat those as sells so cooldown state is preserved.
+        """
         stale = set(self._ledger.keys()) - active_symbols
         for sym in stale:
-            log.info("PDT ledger: cleaning stale entry %s", sym)
-            self._ledger.pop(sym, None)
-        if stale:
-            self._save()
+            log.info("PDT ledger: stale position detected for %s — recording external SELL", sym)
+            self.record_sell(sym)

@@ -289,7 +289,7 @@ async def get_regime():
                 if hmm_available():
                     result = predict_regime(
                         spy_df,
-                        lookback=getattr(config, "HMM_LOOKBACK", 30),
+                        lookback=getattr(config, "HMM_LOOKBACK", 10),
                     )
                     if result is not None:
                         hmm_state        = result["state"]
@@ -299,10 +299,34 @@ async def get_regime():
                         chop_thresh = getattr(config, "HMM_CHOP_THRESHOLD", 0.50)
                         bear_prob   = hmm_probabilities.get("BEAR", 0.0)
                         chop_prob   = hmm_probabilities.get("CHOP", 0.0)
+
+                        # ── Momentum override ──────────────────────────────
+                        # If SPY has recovered strongly recently, the HMM is
+                        # lagging. Downgrade BEAR → CHOP to prevent inverse
+                        # ETF entries during a recovery.
+                        _mom_days = getattr(config, "HMM_MOMENTUM_OVERRIDE_DAYS", 3)
+                        _mom_pct  = getattr(config, "HMM_MOMENTUM_OVERRIDE_PCT", 0.015)
+                        _override_enabled = getattr(config, "HMM_MOMENTUM_OVERRIDE_ENABLED", True)
+                        _momentum_override = False
+                        if hmm_state == "BEAR" and bear_prob >= bear_thresh:
+                            if _override_enabled and len(spy_df) > _mom_days:
+                                _past = float(spy_df["close"].iloc[-(_mom_days + 1)])
+                                _recent_ret = (spy_close - _past) / _past if _past > 0 else 0
+                                if _recent_ret > _mom_pct:
+                                    hmm_state = "CHOP"
+                                    _momentum_override = True
+                            # EMA-200 confirmation
+                            if not _momentum_override:
+                                from indicators import compute_all as _compute_all
+                                _spy_ind = _compute_all(spy_df)
+                                _ema200 = float(_spy_ind.iloc[-1].get("ema_200", 0) or 0)
+                                if _ema200 > 0 and spy_close > _ema200:
+                                    hmm_state = "CHOP"
+
                         chop_active = (
                             hmm_state == "CHOP" and chop_prob >= chop_thresh
                             and bear_prob < bear_thresh
-                        )
+                        ) or (hmm_state == "CHOP" and _momentum_override)
             except Exception:
                 pass
 
@@ -576,6 +600,28 @@ async def get_fill_metrics():
         raise HTTPException(status_code=500, detail=str(exc))
 
 
+@app.get("/api/trade_diagnostics")
+async def get_trade_diagnostics():
+    """Return statistical diagnostics and chart-ready journal analytics."""
+    try:
+        from trade_journal import TradeJournal
+
+        diagnostics = TradeJournal().get_trade_diagnostics()
+
+        def _clean(value: Any):
+            if isinstance(value, float) and not math.isfinite(value):
+                return None
+            if isinstance(value, dict):
+                return {k: _clean(v) for k, v in value.items()}
+            if isinstance(value, list):
+                return [_clean(v) for v in value]
+            return value
+
+        return JSONResponse(content=_clean(diagnostics))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
 @app.post("/api/journal/backfill")
 async def journal_backfill(days: int = 90):
     """
@@ -730,6 +776,16 @@ _CONFIG_EDITABLE_KEYS = {
     "VIX_FILTER_ENABLED", "VIX_SYMBOL",
     "VIX_HALT_THRESHOLD", "VIX_REDUCE_THRESHOLD", "VIX_SIZE_SCALE",
     "INVERSE_ETF_MODE_ENABLED", "INVERSE_ETF_SIZE_SCALE",
+    # HMM Regime
+    "HMM_REGIME_ENABLED", "HMM_BEAR_THRESHOLD", "HMM_CHOP_THRESHOLD",
+    "HMM_CHOP_SIZE_SCALE", "HMM_LOOKBACK",
+    "HMM_MOMENTUM_OVERRIDE_ENABLED", "HMM_MOMENTUM_OVERRIDE_DAYS", "HMM_MOMENTUM_OVERRIDE_PCT",
+    # Bear Short Mode
+    "BEAR_SHORT_MODE_ENABLED", "BEAR_SHORT_SIZE_SCALE", "SHORT_MIN_EQUITY",
+    # Correlation Guard
+    "CORRELATION_GUARD_ENABLED", "CORRELATION_LOOKBACK", "MAX_CORRELATION",
+    # Risk / exits
+    "MAX_LOSS_EXIT_PCT", "STALE_LOSER_EXIT_ENABLED", "DEAD_MONEY_SOFT_GATES",
     # Universe / data
     "MIN_PRICE", "MAX_PRICE", "MIN_AVG_VOLUME",
     "BARS_LOOKBACK",
@@ -744,6 +800,11 @@ _CONFIG_EDITABLE_KEYS = {
     "ML_BLEND_MODE", "ML_FORWARD_BARS",
     "ML_MIN_GAIN_PCT", "ML_LABEL_ATR_MULTIPLIER", "ML_TRAINING_MONTHS",
     "ML_RECENCY_HALFLIFE_DAYS", "ML_RECENCY_MIN_WEIGHT", "ML_RECENCY_WEIGHT_ENABLED",
+    # ML Short model
+    "ML_SHORT_ENABLED", "ML_SHORT_ENTRY_THRESHOLD", "ML_SHORT_MIN_SCORE",
+    # ML Inverse ETF model
+    "ML_INVERSE_ENABLED", "ML_INVERSE_ENTRY_THRESHOLD", "ML_INVERSE_MIN_SCORE",
+    "ML_INVERSE_RECENCY_HALFLIFE_DAYS",
     # NLP Sentiment & Ejection Shield
     "NLP_SENTIMENT_ENABLED", "NLP_MIN_SENTIMENT", "NLP_NEWS_LIMIT_PER_SYMBOL",
     "NLP_NEWS_EJECTION_ENABLED", "NLP_EJECTION_THRESHOLD", "NLP_EJECTION_COOLDOWN_SECS",
@@ -762,18 +823,39 @@ def _load_overrides() -> dict:
     return {}
 
 
+def _coerce_config_value(key: str, val: Any) -> Any:
+    """Coerce dashboard config input to the same type as config.py."""
+    expected = type(getattr(config, key, None))
+    if expected is bool:
+        if isinstance(val, bool):
+            return val
+        if isinstance(val, str):
+            lowered = val.strip().lower()
+            if lowered in {"1", "true", "yes", "on"}:
+                return True
+            if lowered in {"0", "false", "no", "off"}:
+                return False
+        if isinstance(val, (int, float)) and val in (0, 1):
+            return bool(val)
+        raise ValueError(f"Invalid boolean value for {key}: {val!r}")
+    if expected is int:
+        return int(val)
+    if expected is float:
+        return float(val)
+    if expected is str:
+        return str(val)
+    return val
+
+
 def _apply_overrides(overrides: dict) -> None:
     """Apply a dict of key→value onto the live config module."""
     for key, val in overrides.items():
-        if key in _CONFIG_EDITABLE_KEYS and hasattr(config, key):
-            expected = type(getattr(config, key))
-            if expected is bool and not isinstance(val, bool):
-                val = bool(val)
-            elif expected is int and not isinstance(val, bool):
-                val = int(val)
-            elif expected is float:
-                val = float(val)
-            setattr(config, key, val)
+        if key not in _CONFIG_EDITABLE_KEYS or not hasattr(config, key):
+            continue
+        try:
+            setattr(config, key, _coerce_config_value(key, val))
+        except (TypeError, ValueError):
+            continue
 
 
 def _save_and_apply(overrides: dict) -> None:
@@ -814,17 +896,10 @@ async def patch_config(req: ConfigPatchRequest):
     # Merge with existing overrides
     overrides = _load_overrides()
     for key, val in req.updates.items():
-        expected_type = type(getattr(config, key, None))
-        # Coerce type to match config (bool must come before int check)
-        if expected_type is bool:
-            val = bool(val)
-        elif expected_type is int:
-            val = int(val)
-        elif expected_type is float:
-            val = float(val)
-        elif expected_type is str:
-            val = str(val)
-        overrides[key] = val
+        try:
+            overrides[key] = _coerce_config_value(key, val)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     _save_and_apply(overrides)
     return {"ok": True, "applied": list(req.updates.keys())}
@@ -897,16 +972,10 @@ async def patch_backtest_config(req: BacktestConfigPatchRequest):
 
     overrides = _load_backtest_overrides()
     for key, val in req.updates.items():
-        expected_type = type(getattr(config, key, None))
-        if expected_type is bool:
-            val = bool(val)
-        elif expected_type is int:
-            val = int(val)
-        elif expected_type is float:
-            val = float(val)
-        elif expected_type is str:
-            val = str(val)
-        overrides[key] = val
+        try:
+            overrides[key] = _coerce_config_value(key, val)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     _save_backtest_overrides(overrides)
     return {"ok": True, "applied": list(req.updates.keys())}
@@ -1011,6 +1080,118 @@ async def set_trading_mode(req: TradingModeRequest):
         "mode":    req.mode,
         "base_url": config.BASE_URL,
     }
+
+
+# ─────────────────────────────────────────────────────────────
+# Ejection Shield management endpoints
+# ─────────────────────────────────────────────────────────────
+
+_SHIELD_PATH = Path(__file__).parent.parent / "ejection_shield.json"
+
+
+def _load_shield() -> dict:
+    try:
+        return json.loads(_SHIELD_PATH.read_text())
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _save_shield(data: dict) -> None:
+    _SHIELD_PATH.write_text(json.dumps(data, indent=2))
+
+
+@app.get("/api/ejection-shield")
+async def get_ejection_shield():
+    """Return current ejection shield state (suppressed symbols + blocked keywords)."""
+    import time
+    shield = _load_shield()
+    now_ts = time.time()
+    raw_suppressed = shield.get("suppressed_symbols", {})
+    # Enrich each entry with remaining seconds (0 = indefinite)
+    suppressed = {}
+    for sym, expiry in raw_suppressed.items():
+        expiry_f = float(expiry)
+        if expiry_f == 0.0:
+            suppressed[sym] = {"expires_at": None, "remaining_s": None}
+        elif expiry_f > now_ts:
+            suppressed[sym] = {
+                "expires_at": expiry_f,
+                "remaining_s": round(expiry_f - now_ts),
+            }
+        # Skip already-expired entries
+    return {
+        "suppressed_symbols": suppressed,
+        "blocked_keywords":   shield.get("blocked_keywords", []),
+    }
+
+
+class ShieldSuppressRequest(BaseModel):
+    symbol: str
+    minutes: Optional[int] = None   # None or 0 means indefinite
+
+
+@app.post("/api/ejection-shield/suppress")
+async def shield_suppress_symbol(req: ShieldSuppressRequest):
+    """Suppress ejection events for a symbol for N minutes (or indefinitely)."""
+    import time
+    sym = req.symbol.upper().strip()
+    if not sym:
+        raise HTTPException(status_code=400, detail="symbol is required")
+    shield = _load_shield()
+    suppressed = shield.get("suppressed_symbols", {})
+    if req.minutes and req.minutes > 0:
+        expiry = time.time() + req.minutes * 60
+    else:
+        expiry = 0.0   # 0.0 = indefinite sentinel
+    suppressed[sym] = expiry
+    shield["suppressed_symbols"] = suppressed
+    _save_shield(shield)
+    return {"ok": True, "symbol": sym, "expiry": expiry}
+
+
+@app.delete("/api/ejection-shield/suppress/{symbol}")
+async def shield_unsuppress_symbol(symbol: str):
+    """Remove per-symbol ejection suppression."""
+    sym = symbol.upper().strip()
+    shield = _load_shield()
+    suppressed = shield.get("suppressed_symbols", {})
+    removed = sym in suppressed
+    suppressed.pop(sym, None)
+    shield["suppressed_symbols"] = suppressed
+    _save_shield(shield)
+    return {"ok": True, "symbol": sym, "was_suppressed": removed}
+
+
+class ShieldKeywordRequest(BaseModel):
+    keyword: str
+
+
+@app.post("/api/ejection-shield/keyword")
+async def shield_add_keyword(req: ShieldKeywordRequest):
+    """Add a keyword to the ejection shield blocklist."""
+    kw = req.keyword.strip()
+    if not kw:
+        raise HTTPException(status_code=400, detail="keyword is required")
+    shield = _load_shield()
+    blocked = shield.get("blocked_keywords", [])
+    if kw.lower() not in [b.lower() for b in blocked]:
+        blocked.append(kw)
+    shield["blocked_keywords"] = blocked
+    _save_shield(shield)
+    return {"ok": True, "keyword": kw}
+
+
+@app.delete("/api/ejection-shield/keyword/{keyword}")
+async def shield_remove_keyword(keyword: str):
+    """Remove a keyword from the ejection shield blocklist."""
+    kw = keyword.strip()
+    shield = _load_shield()
+    blocked = shield.get("blocked_keywords", [])
+    before = len(blocked)
+    blocked = [b for b in blocked if b.lower() != kw.lower()]
+    shield["blocked_keywords"] = blocked
+    _save_shield(shield)
+    return {"ok": True, "keyword": kw, "was_blocked": len(blocked) < before}
 
 
 # ─────────────────────────────────────────────────────────────
@@ -1392,6 +1573,18 @@ async def ml_inverse_train(req: MLInverseTrainRequest = MLInverseTrainRequest())
 async def ml_inverse_reload():
     import ml_model_inverse
     loaded = ml_model_inverse.reload_model()
+    return {"ok": True, "model_loaded": loaded}
+
+
+# ─────────────────────────────────────────────────────────────
+# HMM reload
+# ─────────────────────────────────────────────────────────────
+
+@app.post("/api/hmm/reload")
+async def hmm_reload():
+    """Force-reload the HMM model from disk (after external retraining)."""
+    import hmm_model
+    loaded = hmm_model.reload_model()
     return {"ok": True, "model_loaded": loaded}
 
 

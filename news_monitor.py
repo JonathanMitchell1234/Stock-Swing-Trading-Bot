@@ -20,6 +20,7 @@ import asyncio
 import json
 import threading
 import time
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import config
@@ -27,11 +28,23 @@ from logger import get_logger
 
 if TYPE_CHECKING:
     from broker import AlpacaBroker
+    from pdt_guard import PDTGuard
 
 log = get_logger("news_monitor")
 
 # Alpaca news stream endpoint (same URL for paper + live — data tier is separate)
 _WS_URL = "wss://stream.data.alpaca.markets/v1beta1/news"
+
+# Ejection shield state file — written by the dashboard API
+_SHIELD_PATH = Path(__file__).parent / "ejection_shield.json"
+
+
+def _load_shield() -> dict:
+    """Load ejection shield config from disk, returning safe defaults on error."""
+    try:
+        return json.loads(_SHIELD_PATH.read_text())
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
 
 _RECONNECT_BASE_DELAY     = 5.0    # seconds before first reconnect attempt
 _RECONNECT_MAX_DELAY      = 120.0  # exponential-backoff ceiling
@@ -59,8 +72,9 @@ class NewsMonitor:
         monitor.stop()
     """
 
-    def __init__(self, broker: "AlpacaBroker") -> None:
+    def __init__(self, broker: "AlpacaBroker", pdt_guard: "PDTGuard | None" = None) -> None:
         self._broker = broker
+        self._pdt_guard = pdt_guard
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -252,6 +266,36 @@ class NewsMonitor:
         if not affected:
             return  # headline doesn't touch any holdings — quick exit
 
+        # ── Ejection shield: per-symbol suppression ────────────────────────────
+        shield = _load_shield()
+        suppressed = shield.get("suppressed_symbols", {})
+        blocked_kws = shield.get("blocked_keywords", [])
+        now_ts = time.time()
+        shielded: list[str] = []
+        filtered: list[str] = []
+        for sym in affected:
+            entry = suppressed.get(sym)
+            if entry is not None:
+                expiry = float(entry)
+                if expiry == 0.0 or expiry > now_ts:
+                    log.info("EJECTION SHIELDED  %s  (manual suppression active)", sym)
+                    shielded.append(sym)
+                    continue
+            filtered.append(sym)
+        affected = filtered
+        if not affected:
+            return
+
+        # ── Ejection shield: blocked keyword check ─────────────────────────────
+        hl_lower = headline.lower()
+        for kw in blocked_kws:
+            if kw.lower() in hl_lower:
+                log.info(
+                    "EJECTION BLOCKED  keyword=%r matched headline=%.120s",
+                    kw, headline,
+                )
+                return
+
         log.info(
             "NEWS HIT  positions=%s  headline=%.120s",
             affected, headline,
@@ -330,6 +374,12 @@ class NewsMonitor:
                     symbol, abs_qty, score,
                 )
                 self._broker.submit_market_cover(symbol, abs_qty)
+
+            if self._pdt_guard is not None:
+                try:
+                    self._pdt_guard.record_sell(symbol)
+                except Exception as exc:
+                    log.warning("Could not update PDT ledger for ejection %s: %s", symbol, exc)
 
             log.warning("EJECTION ORDER SUBMITTED  %s", symbol)
 

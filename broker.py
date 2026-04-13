@@ -535,9 +535,9 @@ class AlpacaBroker:
                     atr = float(df.iloc[-1].get("atr", 0) or 0)
                     if atr > 0:
                         if is_short:
-                            stop_price = risk.compute_short_stop_loss(entry_price, atr)
+                            stop_price = risk.compute_short_stop_loss(entry_price, atr, symbol)
                         else:
-                            stop_price = risk.compute_stop_loss(entry_price, atr)
+                            stop_price = risk.compute_stop_loss(entry_price, atr, symbol)
             except Exception as exc:
                 log.warning("Stop-loss refresh: cannot compute ATR for %s – %s", symbol, exc)
 

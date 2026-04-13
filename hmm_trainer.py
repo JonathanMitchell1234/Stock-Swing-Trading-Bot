@@ -231,6 +231,26 @@ def train_hmm(
         model.monitor_.converged, model.score(X),
     )
 
+    # ── Transition matrix smoothing ───────────────────────────
+    # Without a floor, EM can produce near-zero transition probabilities
+    # (e.g. P(BEAR→BULL) ≈ 5e-44) when a regime is underrepresented in
+    # training data. This makes the model permanently stuck in that state
+    # even when prices are clearly recovering. Applying a 2% minimum floor
+    # and re-normalising rows preserves the learned structure while ensuring
+    # every transition remains reachable.
+    MIN_TRANS_PROB = 0.02
+    transmat = model.transmat_.copy()
+    floored = np.maximum(transmat, MIN_TRANS_PROB)
+    floored = floored / floored.sum(axis=1, keepdims=True)  # re-normalise rows to 1
+    model.transmat_ = floored
+    log.info(
+        "Transition matrix smoothed (floor=%.2f). "
+        "Largest change: %.2e → %.2e",
+        MIN_TRANS_PROB,
+        float(transmat.min()),
+        float(floored.min()),
+    )
+
     return model, scaler
 
 
@@ -262,7 +282,7 @@ def save_model(model, scaler, state_labels: dict, meta: dict) -> None:
 # ═════════════════════════════════════════════════════════════
 
 def run_training(
-    months: int = 36,
+    months: int = 60,
     n_states: int = 3,
     vol_window: int = 5,
     n_iter: int = 200,
@@ -374,8 +394,8 @@ def run_training(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train HMM regime detector")
-    parser.add_argument("--months", type=int, default=36,
-                        help="Months of SPY history (default: 36)")
+    parser.add_argument("--months", type=int, default=60,
+                        help="Months of SPY history (default: 60; covers 2022 bear market)")
     parser.add_argument("--states", type=int, default=3,
                         help="Number of hidden states (default: 3)")
     parser.add_argument("--vol-window", type=int, default=5,

@@ -133,26 +133,26 @@ class RiskManager:
         return qty
 
     # ── stop / target ────────────────────────────────────────
-    def compute_stop_loss(self, entry: float, atr: float) -> float:
+    def compute_stop_loss(self, entry: float, atr: float, symbol: str = "") -> float:
         """ATR-based stop loss (uses dynamic multiplier for account size)."""
         mult = config.get_atr_stop_mult(self.equity)
-        return round(entry - atr * mult, 2)
+        return round(entry - config.descale_atr(atr, symbol) * mult, 2)
 
-    def compute_take_profit(self, entry: float, atr: float) -> float:
+    def compute_take_profit(self, entry: float, atr: float, symbol: str = "") -> float:
         """ATR-based profit target (uses dynamic multiplier for account size)."""
         mult = config.get_atr_profit_mult(self.equity)
-        return round(entry + atr * mult, 2)
+        return round(entry + config.descale_atr(atr, symbol) * mult, 2)
 
     # ── SHORT-specific stop / target ─────────────────────────
-    def compute_short_stop_loss(self, entry: float, atr: float) -> float:
+    def compute_short_stop_loss(self, entry: float, atr: float, symbol: str = "") -> float:
         """ATR-based stop loss for shorts — ABOVE entry price (buy-to-cover)."""
         mult = config.get_atr_stop_mult(self.equity)
-        return round(entry + atr * mult, 2)
+        return round(entry + config.descale_atr(atr, symbol) * mult, 2)
 
-    def compute_short_take_profit(self, entry: float, atr: float) -> float:
+    def compute_short_take_profit(self, entry: float, atr: float, symbol: str = "") -> float:
         """ATR-based profit target for shorts — BELOW entry price."""
         mult = config.get_atr_profit_mult(self.equity)
-        return round(entry - atr * mult, 2)
+        return round(entry - config.descale_atr(atr, symbol) * mult, 2)
 
     def calculate_short_position_size(
         self,

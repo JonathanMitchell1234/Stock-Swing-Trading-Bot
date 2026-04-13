@@ -310,8 +310,8 @@ def run_inverse_training(
     log.info("Step 3/3: Training INVERSE ETF LightGBM…")
     best_params = None
     if tune:
-        log.info("Running Optuna hyperparameter search (50 trials)…")
-        best_params = tune_inverse_hyperparams(X, y, weights=weights, n_trials=50, forward_bars=forward_bars)
+        log.info("Running Optuna hyperparameter search (100 trials)…")
+        best_params = tune_inverse_hyperparams(X, y, weights=weights, n_trials=100, forward_bars=forward_bars)
 
     bst, meta = train_inverse_model(X, y, weights=weights, params=best_params, forward_bars=forward_bars)
 

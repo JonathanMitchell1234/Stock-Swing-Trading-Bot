@@ -6,6 +6,7 @@ Usage (CLI):
     python ml_trainer.py --symbols AAPL MSFT NVDA # specific symbols
     python ml_trainer.py --months 36              # 3 years of data
     python ml_trainer.py --tune                   # run Optuna hyper-param search
+    python ml_trainer.py --target-precision 0.60  # tune threshold for higher win-rate
 
 The trained model is saved to  models/gbm_entry.txt
 and a JSON metrics file to    models/gbm_entry_meta.json
@@ -117,23 +118,16 @@ def compute_recency_weights(
 
     The array is normalised so its mean is 1.0.
     """
-    # Reference calendar date (no timezone)
     ref = pd.Timestamp(reference_date or dt.date.today()).normalize().date()
 
-    # Normalize input dates to calendar dates (datetime.date). This avoids
-    # any tz-aware vs tz-naive arithmetic entirely because we only care about
-    # full-calendar-day differences.
     try:
         date_array = dates.normalize().date
     except Exception:
-        # Fallback: iterate and convert (safe but slightly slower)
         date_array = np.array([pd.Timestamp(d).normalize().date() for d in dates], dtype=object)
 
-    # Compute days ago as integer array and clamp at 0
     days_ago = np.array([(ref - d).days for d in date_array], dtype=float)
     days_ago = np.clip(days_ago, 0.0, None)
 
-    # Exponential decay + floor, then normalise to mean=1
     weights = np.power(2.0, -(days_ago / float(halflife_days)))
     weights = np.maximum(weights, float(min_weight))
     weights = weights / float(weights.mean())
@@ -155,8 +149,6 @@ def build_dataset(
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, list[str]]:
     """
     Build (X, y, weights, symbols_per_row) from all loaded symbol DataFrames.
-    weights is a float32 array of per-sample recency weights (mean=1.0) or
-    an array of ones when recency weighting is disabled.
     """
     all_X: list[np.ndarray] = []
     all_y: list[np.ndarray] = []
@@ -165,9 +157,7 @@ def build_dataset(
     total = len(data)
 
     for i, (sym, df) in enumerate(data.items()):
-        # Features: start after enough warmup bars
         start_idx = max(60, config.EMA_LONG + 5) if hasattr(config, "EMA_LONG") else 210
-        # Leave room at end for forward labels
         end_idx = len(df) - forward_bars - 1
 
         if end_idx <= start_idx:
@@ -205,13 +195,15 @@ def build_dataset(
     y_out = np.concatenate(all_y)
     all_dates_combined = pd.DatetimeIndex(np.concatenate([d.values for d in all_dates]))
 
-    # Sort everything chronologically so TimeSeriesSplit splits by date,
-    # not by symbol order (fixes data-leak where folds mixed time periods).
+    # Sort chronologically for proper TimeSeriesSplit
     sort_idx = np.argsort(all_dates_combined)
     X_out = X_out[sort_idx]
     y_out = y_out[sort_idx]
     all_dates_combined = all_dates_combined[sort_idx]
     all_syms = [all_syms[i] for i in sort_idx]
+
+    # ── Clean features: replace inf/nan ──────────────────────
+    X_out = np.nan_to_num(X_out, nan=0.0, posinf=0.0, neginf=0.0)
 
     # Compute per-sample recency weights
     if config.ML_RECENCY_WEIGHT_ENABLED:
@@ -236,6 +228,48 @@ def build_dataset(
 
 
 # ═════════════════════════════════════════════════════════════
+# Calibration — Platt scaling via isotonic / sigmoid
+# ═════════════════════════════════════════════════════════════
+
+def _calibrate_threshold(
+    y_true: np.ndarray,
+    y_prob: np.ndarray,
+    target_precision: float = 0.50,  # Updated default
+    min_recall: float = 0.10,
+) -> float:
+    """
+    Find the probability threshold that achieves *target_precision*
+    while keeping recall ≥ min_recall.  Falls back to 0.50 if nothing
+    satisfies both constraints.
+    """
+    from sklearn.metrics import precision_recall_curve
+
+    precisions, recalls, thresholds = precision_recall_curve(y_true, y_prob)
+
+    best_thresh = 0.50
+    best_f1 = 0.0
+
+    for p, r, t in zip(precisions, recalls, thresholds):
+        if p >= target_precision and r >= min_recall:
+            f1 = 2 * p * r / (p + r) if (p + r) > 0 else 0
+            if f1 > best_f1:
+                best_f1 = f1
+                best_thresh = float(t)
+
+    # If no threshold meets the hard constraints, pick the one that
+    # maximises F1 with at least some recall
+    if best_f1 == 0:
+        for p, r, t in zip(precisions, recalls, thresholds):
+            if r >= min_recall:
+                f1 = 2 * p * r / (p + r) if (p + r) > 0 else 0
+                if f1 > best_f1:
+                    best_f1 = f1
+                    best_thresh = float(t)
+
+    return round(best_thresh, 4)
+
+
+# ═════════════════════════════════════════════════════════════
 # Training
 # ═════════════════════════════════════════════════════════════
 
@@ -246,11 +280,10 @@ def train_model(
     params: Optional[dict] = None,
     n_splits: int = 5,
     forward_bars: int = 5,
+    target_precision: float = 0.50,  # Passed in dynamically
 ) -> Tuple["lgb.Booster", dict]:
     """
     Train a LightGBM binary classifier using TimeSeriesSplit CV.
-    weights: optional per-sample float array (e.g. from compute_recency_weights).
-             When None, all samples are weighted equally.
     Returns (booster, metrics_dict).
     """
     import lightgbm as lgb
@@ -267,45 +300,50 @@ def train_model(
     if weights is None:
         weights = np.ones(len(y), dtype=np.float32)
 
-    # ── Compute global scale_pos_weight (used for final model only) ───
+    # ── Class balance ─────────────────────────────────────────
     n_pos = int(y.sum())
     n_neg = int(len(y) - n_pos)
     global_spw = n_neg / n_pos if n_pos > 0 else 1.0
 
+    # ── Default params — MUCH more conservative to reduce overfitting ──
     default_params = {
         "objective": "binary",
-        "metric": "binary_logloss",
-        "boosting_type": "gbdt",
-        "num_leaves": 63,
-        "max_depth": 7,
-        "learning_rate": 0.05,
-        "n_estimators": 800,
-        "subsample": 0.8,
-        "colsample_bytree": 0.8,
-        "reg_alpha": 0.1,
-        "reg_lambda": 1.0,
-        "min_child_samples": 50,
-        "scale_pos_weight": global_spw,  # overridden per-fold during CV
+        "metric": ["binary_logloss", "auc"],
+        "boosting_type": "gbdt",             # CUDA support enabled
+        "num_leaves": 31,
+        "max_depth": 5,
+        "learning_rate": 0.03,
+        "n_estimators": 1200,
+        "subsample": 0.7,
+        "subsample_freq": 1,
+        "colsample_bytree": 0.6,
+        "colsample_bynode": 0.7,
+        "reg_alpha": 0.5,
+        "reg_lambda": 2.0,
+        "min_child_samples": 80,
+        "min_child_weight": 1e-3,
+        "min_split_gain": 0.01,
+        "max_bin": 255,
         "verbose": -1,
         "random_state": 42,
         "feature_pre_filter": False,
     }
+
+    recency_active = config.ML_RECENCY_WEIGHT_ENABLED and not np.all(weights == 1.0)
+    if recency_active:
+        default_params["is_unbalance"] = True
+    else:
+        default_params["scale_pos_weight"] = global_spw
+
     if params:
         default_params.update(params)
 
-    # Pull n_estimators out before passing to lgb.train — it is a sklearn alias
-    # that LightGBM's native API does not recognise and will warn/error on.
-    n_estimators = default_params.pop("n_estimators", 800)
+    n_estimators = default_params.pop("n_estimators", 1200)
 
-    # ── Pre-build the full Dataset once ─────────────────────
-    # Constructing lgb.Dataset from raw arrays inside each CV fold triggers
-    # LightGBM's "use a Dataset" warning and repeats the expensive binning
-    # step for every fold.  Building it once with free_raw_data=False keeps
-    # the raw arrays alive so fold subsets can reference the same bin edges.
-    #
-    # NOTE: feature_pre_filter must be set via params at construction time
-    # and then removed from fold/final params so LightGBM does not raise
-    # "Cannot change feature_pre_filter after constructed Dataset handle."
+    lr = default_params.get("learning_rate", 0.03)
+    es_patience = max(80, int(150 / (lr / 0.03)))
+    n_estimators = max(n_estimators, int(1200 / (lr / 0.03)))
+
     construction_params = {"feature_pre_filter": default_params.pop("feature_pre_filter", False)}
     ds_full_ref = lgb.Dataset(
         X, label=y, weight=weights,
@@ -317,22 +355,25 @@ def train_model(
     # ── Time-series CV ───────────────────────────────────────
     tscv = TimeSeriesSplit(n_splits=n_splits)
     cv_metrics: list[dict] = []
+    oof_y_true: list[np.ndarray] = []
+    oof_y_prob: list[np.ndarray] = []
 
     log.info("Training LightGBM with %d samples, %d features, %d CV folds",
              len(X), X.shape[1], n_splits)
-    log.info("Class balance: %.1f%% positive (%d / %d), scale_pos_weight=%.2f",
-             100 * y.mean(), y.sum(), len(y), global_spw)
-    recency_on = config.ML_RECENCY_WEIGHT_ENABLED and not np.all(weights == 1.0)
-    if recency_on:
+    log.info("Class balance: %.1f%% positive (%d / %d)",
+             100 * y.mean(), y.sum(), len(y))
+    log.info("Learning rate: %.4f → early stopping patience: %d, max rounds: %d",
+             lr, es_patience, n_estimators)
+    if recency_active:
         log.info(
-            "Recency weighting ENABLED — weight range [%.3f, %.3f]",
+            "Recency weighting ENABLED — weight range [%.3f, %.3f] — using is_unbalance=True",
             float(weights.min()), float(weights.max()),
         )
+    else:
+        log.info("Using scale_pos_weight=%.2f", default_params.get("scale_pos_weight", global_spw))
 
     for fold, (train_idx, val_idx) in enumerate(tscv.split(X)):
-        # Purged CV: drop the first `forward_bars` rows from the validation
-        # set so training labels that look forward into the validation
-        # period are eliminated (avoids overlapping-label leakage).
+        # Purged CV: drop first forward_bars rows from validation
         if forward_bars > 0 and len(val_idx) > forward_bars:
             val_idx = val_idx[forward_bars:]
 
@@ -340,15 +381,14 @@ def train_model(
         y_tr, y_val = y[train_idx], y[val_idx]
         w_tr = weights[train_idx]
 
-        # Per-fold scale_pos_weight so we only use train-split class balance
-        fold_n_pos = int(y_tr.sum())
-        fold_n_neg = int(len(y_tr) - fold_n_pos)
-        fold_spw = fold_n_neg / fold_n_pos if fold_n_pos > 0 else 1.0
         fold_params = dict(default_params)
-        fold_params["scale_pos_weight"] = fold_spw
 
-        # Build fold datasets from numpy arrays but reference the pre-built
-        # full dataset so LightGBM reuses bin thresholds instead of re-binning.
+        if not recency_active:
+            fold_n_pos = int(y_tr.sum())
+            fold_n_neg = int(len(y_tr) - fold_n_pos)
+            fold_spw = fold_n_neg / fold_n_pos if fold_n_pos > 0 else 1.0
+            fold_params["scale_pos_weight"] = fold_spw
+
         ds_train = lgb.Dataset(
             X_tr, label=y_tr, weight=w_tr,
             feature_name=FEATURE_NAMES,
@@ -363,8 +403,8 @@ def train_model(
         )
 
         callbacks = [
-            lgb.early_stopping(50, verbose=False),
-            lgb.log_evaluation(period=0),  # silence
+            lgb.early_stopping(es_patience, verbose=False),
+            lgb.log_evaluation(period=0),
         ]
 
         bst = lgb.train(
@@ -376,10 +416,20 @@ def train_model(
         )
 
         y_prob = bst.predict(X_val)
-        # Use the live entry threshold so CV metrics reflect real-world
-        # decision-making (default 0.50 is far too conservative for noisy
-        # financial data — the bot already gates on hand-crafted score).
-        cv_threshold = config.ML_ENTRY_THRESHOLD
+
+        oof_y_true.append(y_val)
+        oof_y_prob.append(y_prob)
+
+        for thresh_name, thresh_val in [("0.50", 0.50), ("0.40", 0.40), ("0.35", 0.35)]:
+            y_pred_t = (y_prob >= thresh_val).astype(int)
+            n_pred_pos = int(y_pred_t.sum())
+            if n_pred_pos > 0:
+                p = precision_score(y_val, y_pred_t, zero_division=0)
+                r = recall_score(y_val, y_pred_t, zero_division=0)
+                log.debug("    Fold %d @ thresh=%s: prec=%.3f rec=%.3f pred_pos=%d",
+                          fold, thresh_name, p, r, n_pred_pos)
+
+        cv_threshold = 0.40
         y_pred = (y_prob >= cv_threshold).astype(int)
 
         fold_metrics = {
@@ -392,21 +442,49 @@ def train_model(
             "logloss": round(log_loss(y_val, y_prob), 4),
             "n_train": len(y_tr),
             "n_val": len(y_val),
+            "n_val_pos": int(y_val.sum()),
+            "n_pred_pos": int(y_pred.sum()),
             "best_iter": bst.best_iteration,
+            "cv_threshold": cv_threshold,
         }
         cv_metrics.append(fold_metrics)
-        log.info("  Fold %d: acc=%.3f  prec=%.3f  rec=%.3f  f1=%.3f  auc=%.3f",
+        log.info("  Fold %d: acc=%.3f  prec=%.3f  rec=%.3f  f1=%.3f  auc=%.3f  "
+                 "(val_pos=%d, pred_pos=%d, best_iter=%d)",
                  fold, fold_metrics["accuracy"], fold_metrics["precision"],
-                 fold_metrics["recall"], fold_metrics["f1"], fold_metrics["auc"])
+                 fold_metrics["recall"], fold_metrics["f1"], fold_metrics["auc"],
+                 fold_metrics["n_val_pos"], fold_metrics["n_pred_pos"],
+                 fold_metrics["best_iter"])
+
+    # ── Calibrate threshold from OOF predictions ─────────────
+    all_oof_y = np.concatenate(oof_y_true)
+    all_oof_p = np.concatenate(oof_y_prob)
+    
+    # Use dynamically passed target_precision
+    calibrated_threshold = _calibrate_threshold(
+        all_oof_y, all_oof_p,
+        target_precision=target_precision,
+        min_recall=0.10,
+    )
+    log.info("Calibrated threshold from OOF: %.4f (target prec≥%.2f, rec≥0.10)",
+             calibrated_threshold, target_precision)
+
+    from sklearn.metrics import precision_score, recall_score, f1_score as f1_fn
+    oof_pred = (all_oof_p >= calibrated_threshold).astype(int)
+    oof_prec = precision_score(all_oof_y, oof_pred, zero_division=0)
+    oof_rec = recall_score(all_oof_y, oof_pred, zero_division=0)
+    oof_f1 = f1_fn(all_oof_y, oof_pred, zero_division=0)
+    log.info("OOF @ calibrated threshold %.3f: prec=%.3f  rec=%.3f  f1=%.3f  pred_pos=%d/%d",
+             calibrated_threshold, oof_prec, oof_rec, oof_f1,
+             int(oof_pred.sum()), len(oof_pred))
 
     # ── Final model: train on ALL data ───────────────────────
-    # Reuse the already-constructed full dataset — no re-binning needed.
     log.info("Training final model on full dataset (%d samples)…", len(X))
 
-    final_params = dict(default_params)  # n_estimators already popped above
-    # Use the median best_iteration from CV as num_boost_round
+    final_params = dict(default_params)
     median_iters = int(np.median([m["best_iter"] for m in cv_metrics]))
-    final_n_rounds = max(100, median_iters + 50)
+    final_n_rounds = max(200, median_iters + 80)
+    log.info("Final model: %d boost rounds (median CV best_iter=%d + 80)",
+             final_n_rounds, median_iters)
 
     final_bst = lgb.train(
         final_params,
@@ -422,7 +500,17 @@ def train_model(
     ))
     sorted_imp = dict(sorted(importance.items(), key=lambda x: x[1], reverse=True))
 
-    # Aggregate CV metrics
+    total_gain = sum(sorted_imp.values())
+    if total_gain > 0:
+        top_feat_name = list(sorted_imp.keys())[0]
+        top_feat_pct = list(sorted_imp.values())[0] / total_gain * 100
+        if top_feat_pct > 40:
+            log.warning(
+                "Feature '%s' dominates with %.1f%% of total gain — "
+                "model may be over-relying on a single signal",
+                top_feat_name, top_feat_pct,
+            )
+
     avg_metrics = {
         "accuracy":  round(np.mean([m["accuracy"]  for m in cv_metrics]), 4),
         "precision": round(np.mean([m["precision"] for m in cv_metrics]), 4),
@@ -441,6 +529,14 @@ def train_model(
         "n_cv_folds": n_splits,
         "cv_metrics": cv_metrics,
         "avg_metrics": avg_metrics,
+        "calibrated_threshold": calibrated_threshold,
+        "oof_metrics_at_calibrated": {
+            "precision": round(oof_prec, 4),
+            "recall": round(oof_rec, 4),
+            "f1": round(oof_f1, 4),
+            "n_pred_pos": int(oof_pred.sum()),
+            "n_total": len(oof_pred),
+        },
         "feature_importance": sorted_imp,
         "final_n_rounds": final_n_rounds,
         "params": {k: v for k, v in final_params.items()
@@ -458,14 +554,14 @@ def tune_hyperparams(
     X: np.ndarray,
     y: np.ndarray,
     weights: Optional[np.ndarray] = None,
-    n_trials: int = 50,
+    n_trials: int = 100,
     n_splits: int = 3,
     forward_bars: int = 5,
 ) -> dict:
     """
     Run Optuna to find the best LightGBM hyperparameters.
-    weights: optional per-sample recency weights passed to LightGBM.
-    Returns the best params dict.
+    Optimises for AUC (threshold-independent) — threshold calibration
+    is handled separately after training.
     """
     import optuna
     import lightgbm as lgb
@@ -477,60 +573,79 @@ def tune_hyperparams(
     if weights is None:
         weights = np.ones(len(y), dtype=np.float32)
 
+    recency_active = config.ML_RECENCY_WEIGHT_ENABLED and not np.all(weights == 1.0)
+
     def objective(trial: optuna.Trial) -> float:
+        max_depth = trial.suggest_int("max_depth", 4, 7)
+        max_leaves = 2 ** max_depth
+        num_leaves = trial.suggest_int("num_leaves", 8, min(max_leaves, 63))
+        lr = trial.suggest_float("learning_rate", 0.02, 0.1, log=True)
+
         params = {
             "objective": "binary",
             "metric": "binary_logloss",
             "boosting_type": "gbdt",
-            "num_leaves": trial.suggest_int("num_leaves", 15, 127),
-            "max_depth": trial.suggest_int("max_depth", 3, 10),
-            "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.2, log=True),
-            "subsample": trial.suggest_float("subsample", 0.5, 1.0),
-            "colsample_bytree": trial.suggest_float("colsample_bytree", 0.5, 1.0),
-            "reg_alpha": trial.suggest_float("reg_alpha", 1e-3, 10.0, log=True),
-            "reg_lambda": trial.suggest_float("reg_lambda", 1e-3, 10.0, log=True),
-            "min_child_samples": trial.suggest_int("min_child_samples", 10, 100),
+            "num_leaves": num_leaves,
+            "max_depth": max_depth,
+            "learning_rate": lr,
+            "subsample": trial.suggest_float("subsample", 0.6, 0.85),
+            "subsample_freq": 1,
+            "colsample_bytree": trial.suggest_float("colsample_bytree", 0.5, 0.8),
+            "colsample_bynode": trial.suggest_float("colsample_bynode", 0.5, 1.0),
+            "reg_alpha": trial.suggest_float("reg_alpha", 0.1, 10.0, log=True),
+            "reg_lambda": trial.suggest_float("reg_lambda", 0.5, 10.0, log=True),
+            "min_child_samples": trial.suggest_int("min_child_samples", 30, 120),
+            "min_split_gain": trial.suggest_float("min_split_gain", 0.0, 0.02),
             "verbose": -1,
             "feature_pre_filter": False,
         }
 
+        if recency_active:
+            params["is_unbalance"] = True
+
+        es_patience = max(60, int(100 / (lr / 0.03)))
+        n_boost = max(800, int(1200 / (lr / 0.03)))
+
         tscv = TimeSeriesSplit(n_splits=n_splits)
-        aucs = []
+        auc_scores = []
 
         for train_idx, val_idx in tscv.split(X):
-            # Purged CV: skip first forward_bars validation rows
             if forward_bars > 0 and len(val_idx) > forward_bars:
                 val_idx = val_idx[forward_bars:]
 
             y_tr = y[train_idx]
+            y_val = y[val_idx]
             w_tr = weights[train_idx]
 
-            # Per-fold scale_pos_weight (train split only)
-            fold_n_pos = int(y_tr.sum())
-            fold_n_neg = int(len(y_tr) - fold_n_pos)
-            params["scale_pos_weight"] = fold_n_neg / fold_n_pos if fold_n_pos > 0 else 1.0
+            if len(np.unique(y_val)) < 2:
+                continue
 
-            ds_tr  = lgb.Dataset(X[train_idx], label=y[train_idx], weight=w_tr, feature_name=FEATURE_NAMES)
-            ds_val = lgb.Dataset(X[val_idx],   label=y[val_idx],   reference=ds_tr)
+            if not recency_active:
+                fold_n_pos = int(y_tr.sum())
+                fold_n_neg = int(len(y_tr) - fold_n_pos)
+                params["scale_pos_weight"] = fold_n_neg / fold_n_pos if fold_n_pos > 0 else 1.0
+
+            ds_tr  = lgb.Dataset(X[train_idx], label=y_tr, weight=w_tr, feature_name=FEATURE_NAMES)
+            ds_val = lgb.Dataset(X[val_idx],   label=y_val, reference=ds_tr)
 
             bst = lgb.train(
                 params, ds_tr,
-                num_boost_round=500,
+                num_boost_round=n_boost,
                 valid_sets=[ds_val],
-                callbacks=[lgb.early_stopping(30, verbose=False), lgb.log_evaluation(0)],
+                callbacks=[lgb.early_stopping(es_patience, verbose=False), lgb.log_evaluation(0)],
             )
             y_prob = bst.predict(X[val_idx])
-            if len(np.unique(y[val_idx])) > 1:
-                aucs.append(roc_auc_score(y[val_idx], y_prob))
+            auc_scores.append(roc_auc_score(y_val, y_prob))
 
-        return float(np.mean(aucs)) if aucs else 0.5
+        return float(np.mean(auc_scores)) if auc_scores else 0.0
 
     study = optuna.create_study(direction="maximize")
     study.optimize(objective, n_trials=n_trials, show_progress_bar=True)
 
     log.info("Best AUC: %.4f", study.best_value)
     log.info("Best params: %s", study.best_params)
-    return study.best_params
+
+    return dict(study.best_params)
 
 
 # ═════════════════════════════════════════════════════════════
@@ -562,14 +677,13 @@ def run_training(
     forward_bars: int = 5,
     min_gain_pct: float = 0.03,
     atr_multiplier: float = 0.0,
+    target_precision: float = 0.50,  # Exposed dynamically
     progress_callback=None,
 ) -> dict:
     """
     Full training pipeline. Returns the metadata dict.
-    Can be called programmatically (from dashboard) or from CLI.
     """
     symbols = symbols or list(config.WATCHLIST)
-    # Deduplicate preserving order
     seen = set()
     unique_symbols = []
     for s in symbols:
@@ -586,6 +700,7 @@ def run_training(
     else:
         log.info("Label: ≥%.1f%% gain within %d bars",
                  min_gain_pct * 100, forward_bars)
+    log.info("Target Precision: %.2f (for threshold calibration)", target_precision)
     if config.ML_RECENCY_WEIGHT_ENABLED:
         log.info(
             "Recency weighting: ENABLED  halflife=%d days  min_weight=%.2f",
@@ -606,7 +721,7 @@ def run_training(
     if not data:
         raise RuntimeError("No data loaded — cannot train")
 
-    # Load macro context data (SPY + VIXY) for regime features
+    # Load macro context data
     spy_df = None
     vixy_df = None
     macro_syms = {"SPY": None, config.VIX_SYMBOL: None}
@@ -614,8 +729,6 @@ def run_training(
         [s for s in macro_syms if s not in data],
         months=months,
     )
-    # Avoid `df_a or df_b` — the `or` operator calls bool() on a
-    # DataFrame which raises "truth value of a DataFrame is ambiguous".
     spy_df  = data.get("SPY") if "SPY" in data else macro_data.get("SPY")
     _vix_sym = config.VIX_SYMBOL
     vixy_df = data.get(_vix_sym) if _vix_sym in data else macro_data.get(_vix_sym)
@@ -647,14 +760,31 @@ def run_training(
     if len(X) < 500:
         raise RuntimeError(f"Too few samples ({len(X)}). Need at least 500 for a useful model.")
 
+    # ── Data quality checks ──────────────────────────────────
+    pos_rate = y.mean()
+    if pos_rate < 0.15:
+        log.warning(
+            "Very low positive rate (%.1f%%). Consider reducing min_gain_pct "
+            "(currently %.1f%%) or increasing forward_bars (currently %d). "
+            "Target 25-40%% positive rate for balanced learning.",
+            pos_rate * 100, min_gain_pct * 100, forward_bars,
+        )
+    elif pos_rate > 0.60:
+        log.warning(
+            "Very high positive rate (%.1f%%). The label is too easy — "
+            "consider increasing min_gain_pct or reducing forward_bars.",
+            pos_rate * 100,
+        )
+
     # 3. Train
     log.info("Step 3/3: Training LightGBM…")
     best_params = None
     if tune:
-        log.info("Running Optuna hyperparameter search (50 trials)…")
-        best_params = tune_hyperparams(X, y, weights=weights, n_trials=50, forward_bars=forward_bars)
+        log.info("Running Optuna hyperparameter search (100 trials)…")
+        best_params = tune_hyperparams(X, y, weights=weights, n_trials=100, forward_bars=forward_bars)
 
-    bst, meta = train_model(X, y, weights=weights, params=best_params, forward_bars=forward_bars)
+    # Pass the target_precision dynamically down to the trainer
+    bst, meta = train_model(X, y, weights=weights, params=best_params, forward_bars=forward_bars, target_precision=target_precision)
 
     # Add training metadata
     meta["symbols"] = sorted(data.keys())
@@ -663,6 +793,7 @@ def run_training(
         "forward_bars": forward_bars,
         "min_gain_pct": min_gain_pct,
         "atr_multiplier": atr_multiplier,
+        "target_precision": target_precision,
     }
     meta["recency_weighting"] = {
         "enabled": config.ML_RECENCY_WEIGHT_ENABLED,
@@ -671,13 +802,14 @@ def run_training(
         "weight_min": round(float(weights.min()), 4),
         "weight_max": round(float(weights.max()), 4),
     }
-    meta["cv_threshold"] = config.ML_ENTRY_THRESHOLD
     meta["training_time_s"] = round(time.time() - t0, 1)
 
     save_model(bst, meta)
 
     # Print summary
     avg = meta["avg_metrics"]
+    cal_thresh = meta.get("calibrated_threshold", 0.40)
+    oof_m = meta.get("oof_metrics_at_calibrated", {})
     log.info("=" * 60)
     log.info("TRAINING COMPLETE in %.1fs", meta["training_time_s"])
     log.info("  Samples : %d (%d pos / %d neg)", meta["n_samples"],
@@ -687,13 +819,22 @@ def run_training(
     log.info("  CV Rec  : %.1f%%", avg["recall"] * 100)
     log.info("  CV F1   : %.3f", avg["f1"])
     log.info("  CV AUC  : %.3f", avg["auc"])
+    log.info("  Calibrated Threshold: %.4f", cal_thresh)
+    if oof_m:
+        log.info("  OOF @ %.3f: prec=%.1f%%  rec=%.1f%%  f1=%.3f",
+                 cal_thresh,
+                 oof_m.get("precision", 0) * 100,
+                 oof_m.get("recall", 0) * 100,
+                 oof_m.get("f1", 0))
     log.info("=" * 60)
 
     # Top 10 features
     top_feats = list(meta["feature_importance"].items())[:10]
+    total_gain = sum(meta["feature_importance"].values())
     log.info("Top 10 features by importance (gain):")
     for fname, score in top_feats:
-        log.info("  %4d  %s", score, fname)
+        pct = score / total_gain * 100 if total_gain > 0 else 0
+        log.info("  %6d (%4.1f%%)  %s", score, pct, fname)
 
     return meta
 
@@ -712,6 +853,8 @@ def main():
                         help="Minimum gain %% for positive label (default: 0.03 = 3%%)")
     parser.add_argument("--atr-multiplier", type=float, default=0.0,
                         help="ATR multiplier for volatility-adjusted labels (default: 0 = use static %%)")
+    parser.add_argument("--target-precision", type=float, default=0.50,
+                        help="Target precision for threshold calibration (default: 0.50)")
     args = parser.parse_args()
 
     run_training(
@@ -721,6 +864,7 @@ def main():
         forward_bars=args.forward_bars,
         min_gain_pct=args.min_gain_pct,
         atr_multiplier=args.atr_multiplier,
+        target_precision=args.target_precision,
     )
 
 

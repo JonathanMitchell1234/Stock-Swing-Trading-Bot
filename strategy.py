@@ -98,6 +98,25 @@ def _score_entry_details(df: pd.DataFrame, weekly_bullish: bool = True) -> dict:
         details["block_reasons"].append("Missing key indicators (RSI/ATR/ADX)")
         return details
 
+    # ── Trend integrity filter ───────────────────────────────
+    # Hard block when price is below EMA-50 AND momentum is decaying.
+    # This prevents the ML model from overriding clearly bearish setups
+    # (e.g. HOOD at -6% momentum below EMA-50 with ML prob 0.51).
+    if price < ema_trend:
+        mom_threshold = getattr(config, "ENTRY_MOMENTUM_DECAY_BLOCK", -0.03)
+        if len(df) >= config.MOMENTUM_LOOKBACK + 1:
+            past_price = df.iloc[-(config.MOMENTUM_LOOKBACK + 1)]["close"]
+            if not pd.isna(past_price) and past_price > 0:
+                mom = (price - past_price) / past_price
+                if mom < mom_threshold:
+                    reason = (
+                        f"Price below EMA-50, Momentum decay ({mom*100:.1f}%) "
+                        f"below {mom_threshold*100:.0f}% — trend broken"
+                    )
+                    details["factors"].append(reason)
+                    details["block_reasons"].append(reason)
+                    return details
+
     # Gap-up filter: skip entries after exhaustion gaps.
     prev_close = prv["close"]
     today_open = cur["open"]
@@ -364,7 +383,8 @@ def check_entry(df: pd.DataFrame, weekly_bullish: bool = True,
 # ─────────────────────────────────────────────
 def check_exit(df: pd.DataFrame, entry_price: float = 0.0,
                hold_days: int = 0,
-               explain: bool = False) -> dict | None:
+               explain: bool = False,
+               symbol: str = "") -> dict | None:
     """
     Evaluate whether an existing position should be closed.
 
@@ -407,6 +427,39 @@ def check_exit(df: pd.DataFrame, entry_price: float = 0.0,
 
     hard_reasons = []
     soft_reasons = []
+
+    # ── HARD: max loss circuit breaker ───────────────────────
+    # Cap downside at MAX_LOSS_EXIT_PCT to prevent deep losers like
+    # TZA -16%, MU -11%, COIN -8% from bleeding further.
+    max_loss_pct = getattr(config, "MAX_LOSS_EXIT_PCT", -0.08)
+    if entry_price > 0:
+        unrealised_pct = (price - entry_price) / entry_price
+        # Leveraged ETFs get a tighter max-loss cap
+        lev_symbols = getattr(config, "LEVERAGED_ETF_SYMBOLS", {})
+        if symbol in lev_symbols:
+            lev_factor = lev_symbols[symbol]
+            lev_loss_map = getattr(config, "LEVERAGED_MAX_LOSS_PCT", {})
+            max_loss_pct = lev_loss_map.get(lev_factor, max_loss_pct)
+        if unrealised_pct <= max_loss_pct:
+            hard_reasons.append(
+                f"Max loss breached ({unrealised_pct*100:.1f}% <= "
+                f"{max_loss_pct*100:.0f}% cap)"
+            )
+
+    # ── HARD: leveraged ETF max hold duration ────────────────
+    # Leveraged ETFs suffer from volatility decay (beta slippage) when
+    # held beyond a single day.  Force exit after max hold days.
+    if symbol and getattr(config, "LEVERAGED_ETF_MAX_HOLD", False):
+        lev_symbols = getattr(config, "LEVERAGED_ETF_SYMBOLS", {})
+        if symbol in lev_symbols:
+            lev_factor = lev_symbols[symbol]
+            max_hold_map = getattr(config, "LEVERAGED_MAX_HOLD_DAYS", {})
+            max_hold = max_hold_map.get(lev_factor, 5)
+            if hold_days >= max_hold:
+                hard_reasons.append(
+                    f"Leveraged ETF hold limit ({hold_days}d >= "
+                    f"{max_hold}d max for {lev_factor}× leverage)"
+                )
 
     # ── HARD: price below BOTH EMA-50 and EMA-200 (trend destroyed) ──
     if ema_200 is not None and not pd.isna(ema_200):
