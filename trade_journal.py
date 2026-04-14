@@ -14,6 +14,7 @@ from collections import defaultdict
 from pathlib import Path
 
 import config
+from time_utils import parse_iso_datetime
 
 DB_PATH = Path(__file__).parent / "logs" / "trades.db"
 
@@ -482,7 +483,7 @@ class TradeJournal:
             if not value:
                 return None
             try:
-                return dt.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+                return parse_iso_datetime(value)
             except ValueError:
                 return None
 

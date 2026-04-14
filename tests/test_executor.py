@@ -101,3 +101,19 @@ def test_reconcile_open_positions_backfills_missing_entry(monkeypatch):
     assert args[1] == "long"
     assert args[2] == 101.5
     assert kwargs["order_type"] == "reconciled"
+
+
+def test_get_recent_fill_parses_nanosecond_timestamp():
+    order = SimpleNamespace(
+        side="buy",
+        filled_at="2026-04-13T14:45:19.251336672+00:00",
+        filled_avg_price="101.5",
+    )
+
+    executor = TradeExecutor.__new__(TradeExecutor)
+    executor.broker = DummyBroker(orders=[order])
+
+    fill_dt, fill_price = executor._get_recent_fill("AAPL", "buy")
+
+    assert fill_dt == dt.datetime(2026, 4, 13, 14, 45, 19, 251336, tzinfo=dt.timezone.utc)
+    assert fill_price == 101.5

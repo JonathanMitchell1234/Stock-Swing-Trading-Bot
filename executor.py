@@ -16,6 +16,7 @@ from pdt_guard import PDTGuard
 from risk_manager import RiskManager
 from screener import Screener
 from strategy import check_entry, check_exit, check_short_entry, check_short_exit, check_inverse_entry
+from time_utils import parse_iso_datetime
 from trade_journal import TradeJournal
 from logger import get_logger
 
@@ -48,7 +49,7 @@ class TradeExecutor:
                     continue
                 filled_at = getattr(order, "filled_at")
                 if isinstance(filled_at, str):
-                    filled_at = dt.datetime.fromisoformat(filled_at.replace("Z", "+00:00"))
+                    filled_at = parse_iso_datetime(filled_at)
                 fill_price = float(getattr(order, "filled_avg_price", 0) or 0)
                 return filled_at, (fill_price if fill_price > 0 else None)
         except Exception as exc:
@@ -510,7 +511,7 @@ class TradeExecutor:
                 if order.side == side and getattr(order, "filled_at", None):
                     filled_at = getattr(order, "filled_at")
                     if isinstance(filled_at, str):
-                        filled_at = dt.datetime.fromisoformat(filled_at.replace("Z", "+00:00"))
+                        filled_at = parse_iso_datetime(filled_at)
                     fill_date = filled_at.date()
                     # Backfill PDT ledger so future lookups succeed
                     self.pdt.record_buy(symbol, fill_date=fill_date)

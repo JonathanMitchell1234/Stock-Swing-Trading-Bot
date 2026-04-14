@@ -34,6 +34,7 @@ import tempfile
 
 import config
 from logger import get_logger
+from time_utils import parse_iso_datetime
 
 log = get_logger("pdt_guard")
 
@@ -132,7 +133,7 @@ class PDTGuard:
                     continue
                 # Parse fill time — Alpaca returns ISO 8601 strings
                 if isinstance(filled_at, str):
-                    fill_dt = dt.datetime.fromisoformat(filled_at.replace("Z", "+00:00"))
+                    fill_dt = parse_iso_datetime(filled_at)
                 else:
                     fill_dt = filled_at
                 fill_date_str = fill_dt.date().isoformat()
@@ -263,7 +264,7 @@ class PDTGuard:
             MIN_HOLD_MINUTES = 60
             buy_time_str = self._buy_times.get(symbol)
             if buy_time_str:
-                buy_time = dt.datetime.fromisoformat(buy_time_str)
+                buy_time = parse_iso_datetime(buy_time_str)
                 now = dt.datetime.now(buy_time.tzinfo) if buy_time.tzinfo else dt.datetime.now()
                 minutes_held = (now - buy_time).total_seconds() / 60
                 if minutes_held < MIN_HOLD_MINUTES:

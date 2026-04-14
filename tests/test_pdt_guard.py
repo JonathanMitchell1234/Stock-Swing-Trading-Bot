@@ -47,3 +47,12 @@ def test_reconcile_recovers_held_short_position(monkeypatch, tmp_path: Path):
 
     assert guard._ledger["TSLA"] == "2026-04-01"
     assert guard._buy_times["TSLA"] == filled_at.isoformat()
+
+
+def test_can_sell_today_handles_nanosecond_buy_time(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(pdt_guard, "LEDGER_PATH", tmp_path / "pdt_ledger.json")
+    guard = PDTGuard()
+    guard._ledger["MSFT"] = dt.date.today().isoformat()
+    guard._buy_times["MSFT"] = "2026-04-13T14:45:19.251336672+00:00"
+
+    assert guard.can_sell_today("MSFT") is True
