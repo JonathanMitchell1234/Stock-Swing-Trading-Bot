@@ -54,6 +54,9 @@ _RECONNECT_MAX_DELAY      = 120.0  # exponential-backoff ceiling
 _RECONNECT_406_DELAY      = 60.0   # initial wait after a 406 rejection
 _RECONNECT_406_MAX_DELAY  = 300.0  # 406-specific backoff ceiling
 
+# Positions cache — used as fallback when the REST API is unreachable
+_POSITIONS_CACHE_MAX_AGE  = 300.0  # discard cache older than 5 minutes
+
 
 class _ConnectionLimitError(RuntimeError):
     """Raised when Alpaca rejects the subscription with code 406."""
@@ -80,8 +83,11 @@ class NewsMonitor:
         self._loop: asyncio.AbstractEventLoop | None = None
         # Per-symbol cooldown — maps symbol -> timestamp of last ejection
         self._ejected_at: dict[str, float] = {}
-        # Lock protecting _ejected_at from concurrent writes
+        # Lock protecting _ejected_at and positions cache from concurrent writes
         self._lock = threading.Lock()
+        # Positions cache — fallback when the REST API is temporarily unreachable
+        self._positions_cache: dict[str, object] = {}
+        self._positions_cache_time: float = 0.0
 
     # ------------------------------------------------------------------ #
     # Public interface                                                      #
@@ -188,8 +194,8 @@ class NewsMonitor:
 
         async with websockets.connect(
             _WS_URL,
-            ping_interval=20,
-            ping_timeout=30,
+            ping_interval=30,
+            ping_timeout=60,
             close_timeout=10,
         ) as ws:
             # 1. Authenticate
@@ -257,10 +263,23 @@ class NewsMonitor:
 
         # Fast path: fetch open positions and intersect with headline symbols
         try:
-            open_positions = {p.symbol: p for p in self._broker.get_positions()}
+            positions = self._broker.get_positions()
+            with self._lock:
+                self._positions_cache = {p.symbol: p for p in positions}
+                self._positions_cache_time = time.time()
+            open_positions = self._positions_cache
         except Exception as exc:
             log.debug("get_positions failed in news handler: %s", exc)
-            return
+            with self._lock:
+                cache_age = time.time() - self._positions_cache_time
+                if self._positions_cache and cache_age <= _POSITIONS_CACHE_MAX_AGE:
+                    log.debug(
+                        "Using cached positions (%.0fs old) after get_positions failure",
+                        cache_age,
+                    )
+                    open_positions = self._positions_cache
+                else:
+                    return
 
         affected = [s for s in symbols if s in open_positions]
         if not affected:
