@@ -230,7 +230,7 @@ SECTOR_MAP = {
     "PDD": "Tech",                            # e-commerce
     # ── Fintech ───────────────────────────────────────────────
     "SOFI": "Fintech", "HOOD": "Fintech",
-    "SQ": "Fintech", "AFRM": "Fintech", "COIN": "Fintech",
+    "XYZ": "Fintech", "AFRM": "Fintech", "COIN": "Fintech",
     # ── Crypto ────────────────────────────────────────────────
     "MARA": "Crypto", "MSTR": "Crypto",
     # ── Finance ───────────────────────────────────────────────
