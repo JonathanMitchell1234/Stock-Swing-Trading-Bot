@@ -213,33 +213,71 @@ MAX_CORRELATION = 0.85          # reject entry if |r| >= this vs any open positi
 # ── Sector exposure limits ─────────────────────────────────
 MAX_PER_SECTOR = 99             # effectively disabled for testing
 SECTOR_MAP = {
+    # ── Tech ──────────────────────────────────────────────────
     "AAPL": "Tech", "MSFT": "Tech", "GOOGL": "Tech", "AMZN": "Tech",
     "META": "Tech", "NVDA": "Tech", "AMD": "Tech", "TSM": "Tech",
     "CRM": "Tech", "ADBE": "Tech", "NFLX": "Tech", "QCOM": "Tech",
     "INTC": "Tech", "AVGO": "Tech", "MU": "Tech",
-    "PLTR": "Tech", "SOFI": "Fintech", "MARA": "Crypto", "HOOD": "Fintech",
-    "SNAP": "Tech", "U": "Tech",
+    "PLTR": "Tech", "SNAP": "Tech", "U": "Tech",
+    "CRWD": "Tech", "PANW": "Tech",           # cybersecurity
+    "SNDK": "Tech", "WDC": "Tech",            # storage
+    "MRVL": "Tech", "ARM": "Tech", "LRCX": "Tech",  # semiconductors
+    "TTD": "Tech", "TEAM": "Tech", "BBAI": "Tech",  # software / AI
+    "RBLX": "Tech", "SMCI": "Tech", "ORCL": "Tech", "SHOP": "Tech",
+    "ANET": "Tech", "CSCO": "Tech", "NET": "Tech", "UI": "Tech",
+    "UBER": "Tech", "DASH": "Tech",           # tech-enabled platforms
+    "APLD": "Tech", "AI": "Tech",             # AI infrastructure
+    "PDD": "Tech",                            # e-commerce
+    # ── Fintech ───────────────────────────────────────────────
+    "SOFI": "Fintech", "HOOD": "Fintech",
+    "SQ": "Fintech", "AFRM": "Fintech", "COIN": "Fintech",
+    # ── Crypto ────────────────────────────────────────────────
+    "MARA": "Crypto", "MSTR": "Crypto",
+    # ── Finance ───────────────────────────────────────────────
     "JPM": "Finance", "BAC": "Finance", "GS": "Finance", "MS": "Finance",
     "V": "Finance", "MA": "Finance", "AXP": "Finance",
-    "C": "Finance", "SCHW": "Finance",
+    "C": "Finance", "SCHW": "Finance", "COF": "Finance",
+    # ── Health ────────────────────────────────────────────────
     "JNJ": "Health", "UNH": "Health", "PFE": "Health", "ABBV": "Health",
-    "MRK": "Health", "LLY": "Health", "TMO": "Health",
+    "MRK": "Health", "LLY": "Health", "TMO": "Health", "DXCM": "Health",
+    # ── Consumer ──────────────────────────────────────────────
     "WMT": "Consumer", "COST": "Consumer", "HD": "Consumer",
     "NKE": "Consumer", "SBUX": "Consumer", "MCD": "Consumer", "DIS": "Consumer",
     "F": "Consumer", "RIVN": "Consumer",
+    # ── Energy ────────────────────────────────────────────────
     "XOM": "Energy", "CVX": "Energy", "COP": "Energy",
     "SLB": "Energy", "EOG": "Energy",
+    "MPC": "Energy", "OXY": "Energy", "FANG": "Energy",
+    "ENPH": "Energy",                         # clean energy
+    # ── Industrial ────────────────────────────────────────────
     "CAT": "Industrial", "DE": "Industrial", "BA": "Industrial",
     "GE": "Industrial", "HON": "Industrial", "UNP": "Industrial",
+    "RTX": "Industrial", "LMT": "Industrial", "AVAV": "Industrial",  # defense
+    "DAL": "Industrial", "XPO": "Industrial",                        # transport
+    # ── Materials ─────────────────────────────────────────────
+    "NEM": "Materials", "GOLD": "Materials", "AEM": "Materials",  # gold miners
+    "AA": "Materials",                                              # aluminum
+    # ── ETFs ──────────────────────────────────────────────────
     "SPY": "ETF", "QQQ": "ETF", "IWM": "ETF", "XLF": "ETF",
     "XLE": "ETF", "XLK": "ETF", "TQQQ": "ETF", "SOXL": "ETF",
     "ARKK": "ETF", "VTI": "ETF", "VOO": "ETF", "DIA": "ETF",
     "VIXY": "ETF",   # VIX proxy used for the fear filter
-    # Inverse ETFs (bear-mode alternatives to short-selling)
+    # ── Inverse ETFs (bear-mode alternatives to short-selling) ─
     "SH": "InverseETF", "SDS": "InverseETF", "SPXU": "InverseETF",
     "PSQ": "InverseETF", "QID": "InverseETF", "SQQQ": "InverseETF",
     "RWM": "InverseETF", "SDOW": "InverseETF", "SPXS": "InverseETF",
     "SOXS": "InverseETF",
+    "TZA": "InverseETF", "SRTY": "InverseETF",     # small-cap bear
+    "DOG": "InverseETF", "FAZ": "InverseETF",       # Dow / financial bear
+    "DRV": "InverseETF",                            # real estate bear
+    "SBIT": "InverseETF", "BTCZ": "InverseETF", "ETHD": "InverseETF",  # crypto bear
+    "TMV": "InverseETF",                            # treasury bear
+    "TSLQ": "InverseETF", "MSFD": "InverseETF", "AMZD": "InverseETF", "NVDS": "InverseETF",  # single-stock bear
+    "TECS": "InverseETF", "SSG": "InverseETF",      # tech/semi bear
+    "YANG": "InverseETF",                           # China bear
+    "HDGE": "InverseETF",                           # active equity bear
+    "SPDN": "InverseETF",                           # S&P 500 bear 1x
+    "FNGD": "InverseETF",                           # FANG bear
 }
 
 # ── Bear-mode entry scoring overrides ─────────────────────
