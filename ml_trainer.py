@@ -21,7 +21,7 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -146,7 +146,7 @@ def build_dataset(
     progress_callback=None,
     spy_df: Optional[pd.DataFrame] = None,
     vixy_df: Optional[pd.DataFrame] = None,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, list[str]]:
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, list[str], pd.DatetimeIndex]:
     """
     Build (X, y, weights, symbols_per_row) from all loaded symbol DataFrames.
     """
@@ -189,7 +189,7 @@ def build_dataset(
             progress_callback(i + 1, total, sym)
 
     if not all_X:
-        return np.empty((0, NUM_FEATURES)), np.empty(0), np.empty(0), []
+        return np.empty((0, NUM_FEATURES)), np.empty(0), np.empty(0), [], pd.DatetimeIndex([])
 
     X_out = np.vstack(all_X)
     y_out = np.concatenate(all_y)
@@ -224,49 +224,235 @@ def build_dataset(
     else:
         weights = np.ones(len(X_out), dtype=np.float32)
 
-    return X_out, y_out, weights, all_syms
+    return X_out, y_out, weights, all_syms, all_dates_combined
+
+
+def _compute_threshold_stats(
+    y_true: np.ndarray,
+    y_prob: np.ndarray,
+    threshold: float,
+    reward_to_risk: float,
+    trade_cost: float,
+) -> dict[str, float]:
+    """
+    Compute threshold-dependent classification stats plus a simple
+    expectancy proxy for trading.
+
+    Expectancy proxy (in R units per trade):
+        E = p(win) * reward_to_risk - (1 - p(win)) - trade_cost
+    """
+    y_pred = (y_prob >= threshold).astype(np.int32)
+
+    n_total = int(len(y_true))
+    n_pred = int(y_pred.sum())
+    pred_rate = (n_pred / n_total) if n_total > 0 else 0.0
+
+    tp = int(((y_pred == 1) & (y_true == 1)).sum())
+    fp = int(((y_pred == 1) & (y_true == 0)).sum())
+    fn = int(((y_pred == 0) & (y_true == 1)).sum())
+
+    precision = (tp / (tp + fp)) if (tp + fp) > 0 else 0.0
+    recall = (tp / (tp + fn)) if (tp + fn) > 0 else 0.0
+    f1 = (2.0 * precision * recall / (precision + recall)) if (precision + recall) > 0 else 0.0
+
+    expectancy = precision * reward_to_risk - (1.0 - precision) - trade_cost
+    utility = expectancy * pred_rate
+
+    return {
+        "threshold": float(threshold),
+        "precision": float(precision),
+        "recall": float(recall),
+        "f1": float(f1),
+        "expectancy": float(expectancy),
+        "utility": float(utility),
+        "n_pred": float(n_pred),
+        "pred_rate": float(pred_rate),
+    }
+
+
+def _build_date_purged_folds(
+    sample_dates: pd.DatetimeIndex,
+    n_splits: int,
+    forward_bars: int,
+) -> list[tuple[np.ndarray, np.ndarray]]:
+    """
+    Build time-series CV folds on unique dates (not raw rows), then purge the
+    final forward_bars dates from each train fold to avoid label lookahead bleed
+    into validation.
+    """
+    from sklearn.model_selection import TimeSeriesSplit
+
+    if len(sample_dates) == 0:
+        return []
+
+    norm_dates = pd.to_datetime(sample_dates).normalize().to_numpy()
+    unique_dates = np.array(sorted(pd.unique(norm_dates)))
+
+    # Need enough unique dates for meaningful splits.
+    if len(unique_dates) < (n_splits + 2):
+        return []
+
+    folds: list[tuple[np.ndarray, np.ndarray]] = []
+    date_tscv = TimeSeriesSplit(n_splits=n_splits)
+
+    for train_date_idx, val_date_idx in date_tscv.split(unique_dates):
+        train_dates = unique_dates[train_date_idx]
+        val_dates = unique_dates[val_date_idx]
+
+        if forward_bars > 0 and len(train_dates) > forward_bars:
+            train_dates = train_dates[:-forward_bars]
+
+        train_mask = np.isin(norm_dates, train_dates)
+        val_mask = np.isin(norm_dates, val_dates)
+
+        train_idx = np.flatnonzero(train_mask)
+        val_idx = np.flatnonzero(val_mask)
+
+        if len(train_idx) == 0 or len(val_idx) == 0:
+            continue
+
+        folds.append((train_idx, val_idx))
+
+    return folds
 
 
 # ═════════════════════════════════════════════════════════════
-# Calibration — Platt scaling via isotonic / sigmoid
+# Threshold calibration
 # ═════════════════════════════════════════════════════════════
 
 def _calibrate_threshold(
     y_true: np.ndarray,
     y_prob: np.ndarray,
-    target_precision: float = 0.50,  # Updated default
+    target_precision: float = 0.50,
     min_recall: float = 0.10,
-) -> float:
+    min_pred_rate: float = 0.03,
+    reward_to_risk: float = 1.8,
+    trade_cost: float = 0.05,
+) -> dict[str, Any]:
     """
-    Find the probability threshold that achieves *target_precision*
-    while keeping recall ≥ min_recall.  Falls back to 0.50 if nothing
-    satisfies both constraints.
+    Calibrate a probability threshold using precision constraints plus a
+    trade expectancy proxy, instead of optimizing F1 alone.
+
+    Selection priority:
+      1) meets precision, recall, minimum signal-rate and positive expectancy
+      2) meets recall + minimum signal-rate + positive expectancy
+      3) meets recall and maximizes F1
+      4) global best F1 fallback
     """
     from sklearn.metrics import precision_recall_curve
 
-    precisions, recalls, thresholds = precision_recall_curve(y_true, y_prob)
+    if len(y_true) == 0:
+        fallback = _compute_threshold_stats(
+            np.array([], dtype=np.int32),
+            np.array([], dtype=np.float32),
+            threshold=0.50,
+            reward_to_risk=reward_to_risk,
+            trade_cost=trade_cost,
+        )
+        return {
+            "selection_mode": "empty-input-fallback",
+            "target_precision": round(float(target_precision), 4),
+            "min_recall": round(float(min_recall), 4),
+            "min_pred_rate": round(float(min_pred_rate), 4),
+            "reward_to_risk": round(float(reward_to_risk), 4),
+            "trade_cost": round(float(trade_cost), 4),
+            "min_pred_count": 0,
+            "threshold": 0.50,
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "expectancy": round(float(fallback["expectancy"]), 4),
+            "utility": 0.0,
+            "n_pred": 0,
+            "pred_rate": 0.0,
+            "top_candidates": [],
+        }
 
-    best_thresh = 0.50
-    best_f1 = 0.0
+    target_precision = float(np.clip(target_precision, 0.01, 0.99))
+    min_recall = float(np.clip(min_recall, 0.0, 1.0))
+    min_pred_rate = float(np.clip(min_pred_rate, 0.0, 1.0))
 
-    for p, r, t in zip(precisions, recalls, thresholds):
-        if p >= target_precision and r >= min_recall:
-            f1 = 2 * p * r / (p + r) if (p + r) > 0 else 0
-            if f1 > best_f1:
-                best_f1 = f1
-                best_thresh = float(t)
+    _, _, pr_thresholds = precision_recall_curve(y_true, y_prob)
+    quantile_thresholds = np.quantile(y_prob, np.linspace(0.05, 0.98, 110))
+    anchor_thresholds = np.array([0.35, 0.40, 0.45, 0.50, 0.55, 0.60, 0.65, 0.70])
 
-    # If no threshold meets the hard constraints, pick the one that
-    # maximises F1 with at least some recall
-    if best_f1 == 0:
-        for p, r, t in zip(precisions, recalls, thresholds):
-            if r >= min_recall:
-                f1 = 2 * p * r / (p + r) if (p + r) > 0 else 0
-                if f1 > best_f1:
-                    best_f1 = f1
-                    best_thresh = float(t)
+    candidate_thresholds = np.unique(
+        np.concatenate([pr_thresholds, quantile_thresholds, anchor_thresholds])
+    )
+    candidate_thresholds = candidate_thresholds[(candidate_thresholds >= 0.0) & (candidate_thresholds <= 1.0)]
 
-    return round(best_thresh, 4)
+    if len(candidate_thresholds) == 0:
+        candidate_thresholds = np.array([0.50])
+
+    min_pred_count = max(25, int(np.ceil(len(y_true) * min_pred_rate)))
+
+    stats = [
+        _compute_threshold_stats(
+            y_true=y_true,
+            y_prob=y_prob,
+            threshold=float(t),
+            reward_to_risk=reward_to_risk,
+            trade_cost=trade_cost,
+        )
+        for t in candidate_thresholds
+    ]
+
+    strict = [
+        s for s in stats
+        if s["precision"] >= target_precision
+        and s["recall"] >= min_recall
+        and s["n_pred"] >= min_pred_count
+        and s["expectancy"] > 0
+    ]
+
+    if strict:
+        selection_mode = "precision+recall+expectancy"
+        selected = max(strict, key=lambda s: (s["utility"], s["f1"], s["threshold"]))
+    else:
+        profitable = [
+            s for s in stats
+            if s["recall"] >= min_recall
+            and s["n_pred"] >= min_pred_count
+            and s["expectancy"] > 0
+        ]
+        if profitable:
+            selection_mode = "recall+expectancy"
+            selected = max(profitable, key=lambda s: (s["utility"], s["precision"], s["threshold"]))
+        else:
+            recall_ok = [s for s in stats if s["recall"] >= min_recall]
+            if recall_ok:
+                selection_mode = "recall+f1-fallback"
+                selected = max(recall_ok, key=lambda s: (s["f1"], s["precision"], s["threshold"]))
+            else:
+                selection_mode = "global-f1-fallback"
+                selected = max(stats, key=lambda s: (s["f1"], s["precision"], s["threshold"]))
+
+    top_candidates = sorted(stats, key=lambda s: (s["utility"], s["precision"], s["threshold"]), reverse=True)[:10]
+
+    def _round_stats(s: dict[str, float]) -> dict[str, float | int]:
+        return {
+            "threshold": round(float(s["threshold"]), 4),
+            "precision": round(float(s["precision"]), 4),
+            "recall": round(float(s["recall"]), 4),
+            "f1": round(float(s["f1"]), 4),
+            "expectancy": round(float(s["expectancy"]), 4),
+            "utility": round(float(s["utility"]), 6),
+            "n_pred": int(s["n_pred"]),
+            "pred_rate": round(float(s["pred_rate"]), 4),
+        }
+
+    selected_rounded = _round_stats(selected)
+    return {
+        "selection_mode": selection_mode,
+        "target_precision": round(float(target_precision), 4),
+        "min_recall": round(float(min_recall), 4),
+        "min_pred_rate": round(float(min_pred_rate), 4),
+        "reward_to_risk": round(float(reward_to_risk), 4),
+        "trade_cost": round(float(trade_cost), 4),
+        "min_pred_count": int(min_pred_count),
+        **selected_rounded,
+        "top_candidates": [_round_stats(s) for s in top_candidates],
+    }
 
 
 # ═════════════════════════════════════════════════════════════
@@ -281,7 +467,12 @@ def train_model(
     n_splits: int = 5,
     forward_bars: int = 5,
     target_precision: float = 0.50,  # Passed in dynamically
-) -> Tuple["lgb.Booster", dict]:
+    sample_dates: Optional[pd.DatetimeIndex] = None,
+    min_recall: float = 0.10,
+    min_pred_rate: float = 0.03,
+    reward_to_risk: float = 1.8,
+    trade_cost: float = 0.05,
+) -> Tuple[Any, dict]:
     """
     Train a LightGBM binary classifier using TimeSeriesSplit CV.
     Returns (booster, metrics_dict).
@@ -290,9 +481,6 @@ def train_model(
     from sklearn.model_selection import TimeSeriesSplit
     from sklearn.metrics import (
         accuracy_score,
-        precision_score,
-        recall_score,
-        f1_score,
         roc_auc_score,
         log_loss,
     )
@@ -300,10 +488,10 @@ def train_model(
     if weights is None:
         weights = np.ones(len(y), dtype=np.float32)
 
-    # ── Class balance ─────────────────────────────────────────
-    n_pos = int(y.sum())
-    n_neg = int(len(y) - n_pos)
-    global_spw = n_neg / n_pos if n_pos > 0 else 1.0
+    # ── Class balance (weighted) ──────────────────────────────
+    w_pos = float(weights[y == 1].sum())
+    w_neg = float(weights[y == 0].sum())
+    global_spw = (w_neg / w_pos) if w_pos > 0 else 1.0
 
     # ── Default params — MUCH more conservative to reduce overfitting ──
     default_params = {
@@ -329,14 +517,14 @@ def train_model(
         "feature_pre_filter": False,
     }
 
-    recency_active = config.ML_RECENCY_WEIGHT_ENABLED and not np.all(weights == 1.0)
-    if recency_active:
-        default_params["is_unbalance"] = True
-    else:
-        default_params["scale_pos_weight"] = global_spw
+    recency_active = config.ML_RECENCY_WEIGHT_ENABLED and not np.allclose(weights, 1.0)
+    default_params["scale_pos_weight"] = global_spw
 
     if params:
         default_params.update(params)
+
+    # Prefer explicit class weighting over LightGBM's internal auto-balance.
+    default_params.pop("is_unbalance", None)
 
     n_estimators = default_params.pop("n_estimators", 1200)
 
@@ -353,41 +541,65 @@ def train_model(
     ).construct()
 
     # ── Time-series CV ───────────────────────────────────────
-    tscv = TimeSeriesSplit(n_splits=n_splits)
+    fold_splits: list[tuple[np.ndarray, np.ndarray]] = []
+    split_mode = "row-timeseries"
+
+    if sample_dates is not None and len(sample_dates) == len(X):
+        fold_splits = _build_date_purged_folds(
+            sample_dates=sample_dates,
+            n_splits=n_splits,
+            forward_bars=forward_bars,
+        )
+        if fold_splits:
+            split_mode = "date-purged"
+
+    if not fold_splits:
+        tscv = TimeSeriesSplit(n_splits=n_splits)
+        for train_idx, val_idx in tscv.split(X):
+            # Purge trailing train rows so their labels don't consume future
+            # bars that belong to validation.
+            if forward_bars > 0 and len(train_idx) > forward_bars:
+                train_idx = train_idx[:-forward_bars]
+
+            if len(train_idx) == 0 or len(val_idx) == 0:
+                continue
+
+            fold_splits.append((train_idx, val_idx))
+
+    if not fold_splits:
+        raise RuntimeError("Could not build valid CV folds for training.")
+
     cv_metrics: list[dict] = []
+    cv_metrics_at_calibrated: list[dict] = []
     oof_y_true: list[np.ndarray] = []
     oof_y_prob: list[np.ndarray] = []
+    fold_oof: list[tuple[np.ndarray, np.ndarray]] = []
 
     log.info("Training LightGBM with %d samples, %d features, %d CV folds",
-             len(X), X.shape[1], n_splits)
+             len(X), X.shape[1], len(fold_splits))
     log.info("Class balance: %.1f%% positive (%d / %d)",
              100 * y.mean(), y.sum(), len(y))
     log.info("Learning rate: %.4f → early stopping patience: %d, max rounds: %d",
              lr, es_patience, n_estimators)
+    log.info("CV split mode: %s", split_mode)
     if recency_active:
         log.info(
-            "Recency weighting ENABLED — weight range [%.3f, %.3f] — using is_unbalance=True",
+            "Recency weighting ENABLED — weight range [%.3f, %.3f]",
             float(weights.min()), float(weights.max()),
         )
-    else:
-        log.info("Using scale_pos_weight=%.2f", default_params.get("scale_pos_weight", global_spw))
+    log.info("Using weighted scale_pos_weight=%.3f", default_params.get("scale_pos_weight", global_spw))
 
-    for fold, (train_idx, val_idx) in enumerate(tscv.split(X)):
-        # Purged CV: drop first forward_bars rows from validation
-        if forward_bars > 0 and len(val_idx) > forward_bars:
-            val_idx = val_idx[forward_bars:]
-
+    for fold, (train_idx, val_idx) in enumerate(fold_splits):
         X_tr, X_val = X[train_idx], X[val_idx]
         y_tr, y_val = y[train_idx], y[val_idx]
         w_tr = weights[train_idx]
 
         fold_params = dict(default_params)
 
-        if not recency_active:
-            fold_n_pos = int(y_tr.sum())
-            fold_n_neg = int(len(y_tr) - fold_n_pos)
-            fold_spw = fold_n_neg / fold_n_pos if fold_n_pos > 0 else 1.0
-            fold_params["scale_pos_weight"] = fold_spw
+        fold_w_pos = float(w_tr[y_tr == 1].sum())
+        fold_w_neg = float(w_tr[y_tr == 0].sum())
+        fold_spw = (fold_w_neg / fold_w_pos) if fold_w_pos > 0 else 1.0
+        fold_params["scale_pos_weight"] = fold_spw
 
         ds_train = lgb.Dataset(
             X_tr, label=y_tr, weight=w_tr,
@@ -419,63 +631,135 @@ def train_model(
 
         oof_y_true.append(y_val)
         oof_y_prob.append(y_prob)
+        fold_oof.append((y_val.copy(), y_prob.copy()))
 
-        for thresh_name, thresh_val in [("0.50", 0.50), ("0.40", 0.40), ("0.35", 0.35)]:
-            y_pred_t = (y_prob >= thresh_val).astype(int)
-            n_pred_pos = int(y_pred_t.sum())
-            if n_pred_pos > 0:
-                p = precision_score(y_val, y_pred_t, zero_division=0)
-                r = recall_score(y_val, y_pred_t, zero_division=0)
-                log.debug("    Fold %d @ thresh=%s: prec=%.3f rec=%.3f pred_pos=%d",
-                          fold, thresh_name, p, r, n_pred_pos)
+        for thresh_name, thresh_val in [("0.50", 0.50), ("0.60", 0.60), ("0.70", 0.70)]:
+            t_stats = _compute_threshold_stats(
+                y_true=y_val,
+                y_prob=y_prob,
+                threshold=thresh_val,
+                reward_to_risk=reward_to_risk,
+                trade_cost=trade_cost,
+            )
+            if t_stats["n_pred"] > 0:
+                log.debug(
+                    "    Fold %d @ thresh=%s: prec=%.3f rec=%.3f pred_pos=%d expect=%.3f",
+                    fold,
+                    thresh_name,
+                    t_stats["precision"],
+                    t_stats["recall"],
+                    int(t_stats["n_pred"]),
+                    t_stats["expectancy"],
+                )
 
-        cv_threshold = 0.40
+        cv_threshold = 0.50
+        cv_stats = _compute_threshold_stats(
+            y_true=y_val,
+            y_prob=y_prob,
+            threshold=cv_threshold,
+            reward_to_risk=reward_to_risk,
+            trade_cost=trade_cost,
+        )
         y_pred = (y_prob >= cv_threshold).astype(int)
 
         fold_metrics = {
             "fold": fold,
             "accuracy": round(accuracy_score(y_val, y_pred), 4),
-            "precision": round(precision_score(y_val, y_pred, zero_division=0), 4),
-            "recall": round(recall_score(y_val, y_pred, zero_division=0), 4),
-            "f1": round(f1_score(y_val, y_pred, zero_division=0), 4),
+            "precision": round(float(cv_stats["precision"]), 4),
+            "recall": round(float(cv_stats["recall"]), 4),
+            "f1": round(float(cv_stats["f1"]), 4),
             "auc": round(roc_auc_score(y_val, y_prob), 4) if len(np.unique(y_val)) > 1 else 0.0,
-            "logloss": round(log_loss(y_val, y_prob), 4),
+            "logloss": (
+                round(log_loss(y_val, np.clip(y_prob, 1e-7, 1.0 - 1e-7)), 4)
+                if len(np.unique(y_val)) > 1
+                else 0.0
+            ),
             "n_train": len(y_tr),
             "n_val": len(y_val),
             "n_val_pos": int(y_val.sum()),
             "n_pred_pos": int(y_pred.sum()),
             "best_iter": bst.best_iteration,
             "cv_threshold": cv_threshold,
+            "expectancy": round(float(cv_stats["expectancy"]), 4),
+            "utility": round(float(cv_stats["utility"]), 6),
+            "pred_rate": round(float(cv_stats["pred_rate"]), 4),
         }
         cv_metrics.append(fold_metrics)
         log.info("  Fold %d: acc=%.3f  prec=%.3f  rec=%.3f  f1=%.3f  auc=%.3f  "
-                 "(val_pos=%d, pred_pos=%d, best_iter=%d)",
+                 "(val_pos=%d, pred_pos=%d, best_iter=%d, expect=%.3f)",
                  fold, fold_metrics["accuracy"], fold_metrics["precision"],
                  fold_metrics["recall"], fold_metrics["f1"], fold_metrics["auc"],
                  fold_metrics["n_val_pos"], fold_metrics["n_pred_pos"],
-                 fold_metrics["best_iter"])
+                 fold_metrics["best_iter"], fold_metrics["expectancy"])
+
+    if not oof_y_true:
+        raise RuntimeError("No valid out-of-fold predictions were produced during CV.")
 
     # ── Calibrate threshold from OOF predictions ─────────────
     all_oof_y = np.concatenate(oof_y_true)
     all_oof_p = np.concatenate(oof_y_prob)
-    
-    # Use dynamically passed target_precision
-    calibrated_threshold = _calibrate_threshold(
+
+    calibration = _calibrate_threshold(
         all_oof_y, all_oof_p,
         target_precision=target_precision,
-        min_recall=0.10,
+        min_recall=min_recall,
+        min_pred_rate=min_pred_rate,
+        reward_to_risk=reward_to_risk,
+        trade_cost=trade_cost,
     )
-    log.info("Calibrated threshold from OOF: %.4f (target prec≥%.2f, rec≥0.10)",
-             calibrated_threshold, target_precision)
 
-    from sklearn.metrics import precision_score, recall_score, f1_score as f1_fn
+    calibrated_threshold = float(calibration["threshold"])
+    oof_stats = _compute_threshold_stats(
+        y_true=all_oof_y,
+        y_prob=all_oof_p,
+        threshold=calibrated_threshold,
+        reward_to_risk=reward_to_risk,
+        trade_cost=trade_cost,
+    )
     oof_pred = (all_oof_p >= calibrated_threshold).astype(int)
-    oof_prec = precision_score(all_oof_y, oof_pred, zero_division=0)
-    oof_rec = recall_score(all_oof_y, oof_pred, zero_division=0)
-    oof_f1 = f1_fn(all_oof_y, oof_pred, zero_division=0)
-    log.info("OOF @ calibrated threshold %.3f: prec=%.3f  rec=%.3f  f1=%.3f  pred_pos=%d/%d",
-             calibrated_threshold, oof_prec, oof_rec, oof_f1,
-             int(oof_pred.sum()), len(oof_pred))
+
+    log.info(
+        "Calibrated threshold from OOF: %.4f (mode=%s, target prec≥%.2f, rec≥%.2f, min-signal-rate=%.1f%%)",
+        calibrated_threshold,
+        calibration["selection_mode"],
+        target_precision,
+        min_recall,
+        min_pred_rate * 100,
+    )
+    log.info(
+        "OOF @ %.3f: prec=%.3f  rec=%.3f  f1=%.3f  pred_pos=%d/%d  expect=%.3f",
+        calibrated_threshold,
+        oof_stats["precision"],
+        oof_stats["recall"],
+        oof_stats["f1"],
+        int(oof_stats["n_pred"]),
+        len(all_oof_y),
+        oof_stats["expectancy"],
+    )
+
+    for fold, (fold_y, fold_p) in enumerate(fold_oof):
+        fold_stats = _compute_threshold_stats(
+            y_true=fold_y,
+            y_prob=fold_p,
+            threshold=calibrated_threshold,
+            reward_to_risk=reward_to_risk,
+            trade_cost=trade_cost,
+        )
+        fold_pred = (fold_p >= calibrated_threshold).astype(int)
+        cv_metrics_at_calibrated.append(
+            {
+                "fold": fold,
+                "accuracy": round(accuracy_score(fold_y, fold_pred), 4),
+                "precision": round(float(fold_stats["precision"]), 4),
+                "recall": round(float(fold_stats["recall"]), 4),
+                "f1": round(float(fold_stats["f1"]), 4),
+                "expectancy": round(float(fold_stats["expectancy"]), 4),
+                "utility": round(float(fold_stats["utility"]), 6),
+                "pred_rate": round(float(fold_stats["pred_rate"]), 4),
+                "n_pred_pos": int(fold_stats["n_pred"]),
+                "n_val": int(len(fold_y)),
+            }
+        )
 
     # ── Final model: train on ALL data ───────────────────────
     log.info("Training final model on full dataset (%d samples)…", len(X))
@@ -518,6 +802,17 @@ def train_model(
         "f1":        round(np.mean([m["f1"]        for m in cv_metrics]), 4),
         "auc":       round(np.mean([m["auc"]       for m in cv_metrics]), 4),
         "logloss":   round(np.mean([m["logloss"]   for m in cv_metrics]), 4),
+        "expectancy": round(np.mean([m["expectancy"] for m in cv_metrics]), 4),
+        "pred_rate": round(np.mean([m["pred_rate"] for m in cv_metrics]), 4),
+    }
+
+    avg_metrics_at_calibrated = {
+        "accuracy": round(np.mean([m["accuracy"] for m in cv_metrics_at_calibrated]), 4),
+        "precision": round(np.mean([m["precision"] for m in cv_metrics_at_calibrated]), 4),
+        "recall": round(np.mean([m["recall"] for m in cv_metrics_at_calibrated]), 4),
+        "f1": round(np.mean([m["f1"] for m in cv_metrics_at_calibrated]), 4),
+        "expectancy": round(np.mean([m["expectancy"] for m in cv_metrics_at_calibrated]), 4),
+        "pred_rate": round(np.mean([m["pred_rate"] for m in cv_metrics_at_calibrated]), 4),
     }
 
     meta = {
@@ -527,20 +822,27 @@ def train_model(
         "n_negative": int(len(y) - y.sum()),
         "n_features": int(X.shape[1]),
         "n_cv_folds": n_splits,
+        "cv_split_mode": split_mode,
         "cv_metrics": cv_metrics,
         "avg_metrics": avg_metrics,
-        "calibrated_threshold": calibrated_threshold,
+        "cv_metrics_at_calibrated": cv_metrics_at_calibrated,
+        "avg_metrics_at_calibrated": avg_metrics_at_calibrated,
+        "calibrated_threshold": round(calibrated_threshold, 4),
+        "recommended_ml_entry_threshold": round(calibrated_threshold, 4),
+        "threshold_calibration": calibration,
         "oof_metrics_at_calibrated": {
-            "precision": round(oof_prec, 4),
-            "recall": round(oof_rec, 4),
-            "f1": round(oof_f1, 4),
-            "n_pred_pos": int(oof_pred.sum()),
+            "precision": round(float(oof_stats["precision"]), 4),
+            "recall": round(float(oof_stats["recall"]), 4),
+            "f1": round(float(oof_stats["f1"]), 4),
+            "expectancy": round(float(oof_stats["expectancy"]), 4),
+            "pred_rate": round(float(oof_stats["pred_rate"]), 4),
+            "n_pred_pos": int(oof_stats["n_pred"]),
             "n_total": len(oof_pred),
         },
         "feature_importance": sorted_imp,
         "final_n_rounds": final_n_rounds,
         "params": {k: v for k, v in final_params.items()
-                   if k not in ("verbose", "random_state", "feature_pre_filter")},
+                   if k not in ("verbose", "random_state", "feature_pre_filter", "is_unbalance")},
     }
 
     return final_bst, meta
@@ -557,23 +859,22 @@ def tune_hyperparams(
     n_trials: int = 100,
     n_splits: int = 3,
     forward_bars: int = 5,
+    target_precision: float = 0.60,
 ) -> dict:
     """
     Run Optuna to find the best LightGBM hyperparameters.
-    Optimises for AUC (threshold-independent) — threshold calibration
-    is handled separately after training.
+    Optimises for precision-recall quality (Average Precision) with a
+    lightweight threshold-utility component.
     """
     import optuna
     import lightgbm as lgb
     from sklearn.model_selection import TimeSeriesSplit
-    from sklearn.metrics import roc_auc_score
+    from sklearn.metrics import average_precision_score
 
     optuna.logging.set_verbosity(optuna.logging.WARNING)
 
     if weights is None:
         weights = np.ones(len(y), dtype=np.float32)
-
-    recency_active = config.ML_RECENCY_WEIGHT_ENABLED and not np.all(weights == 1.0)
 
     def objective(trial: optuna.Trial) -> float:
         max_depth = trial.suggest_int("max_depth", 4, 7)
@@ -600,18 +901,19 @@ def tune_hyperparams(
             "feature_pre_filter": False,
         }
 
-        if recency_active:
-            params["is_unbalance"] = True
-
         es_patience = max(60, int(100 / (lr / 0.03)))
         n_boost = max(800, int(1200 / (lr / 0.03)))
 
         tscv = TimeSeriesSplit(n_splits=n_splits)
-        auc_scores = []
+        ap_scores: list[float] = []
+        utility_scores: list[float] = []
 
         for train_idx, val_idx in tscv.split(X):
-            if forward_bars > 0 and len(val_idx) > forward_bars:
-                val_idx = val_idx[forward_bars:]
+            if forward_bars > 0 and len(train_idx) > forward_bars:
+                train_idx = train_idx[:-forward_bars]
+
+            if len(train_idx) == 0 or len(val_idx) == 0:
+                continue
 
             y_tr = y[train_idx]
             y_val = y[val_idx]
@@ -620,29 +922,48 @@ def tune_hyperparams(
             if len(np.unique(y_val)) < 2:
                 continue
 
-            if not recency_active:
-                fold_n_pos = int(y_tr.sum())
-                fold_n_neg = int(len(y_tr) - fold_n_pos)
-                params["scale_pos_weight"] = fold_n_neg / fold_n_pos if fold_n_pos > 0 else 1.0
+            fold_w_pos = float(w_tr[y_tr == 1].sum())
+            fold_w_neg = float(w_tr[y_tr == 0].sum())
+            fold_spw = (fold_w_neg / fold_w_pos) if fold_w_pos > 0 else 1.0
+
+            fold_params = dict(params)
+            fold_params["scale_pos_weight"] = fold_spw
+            fold_params.pop("is_unbalance", None)
 
             ds_tr  = lgb.Dataset(X[train_idx], label=y_tr, weight=w_tr, feature_name=FEATURE_NAMES)
             ds_val = lgb.Dataset(X[val_idx],   label=y_val, reference=ds_tr)
 
             bst = lgb.train(
-                params, ds_tr,
+                fold_params, ds_tr,
                 num_boost_round=n_boost,
                 valid_sets=[ds_val],
                 callbacks=[lgb.early_stopping(es_patience, verbose=False), lgb.log_evaluation(0)],
             )
             y_prob = bst.predict(X[val_idx])
-            auc_scores.append(roc_auc_score(y_val, y_prob))
+            ap_scores.append(float(average_precision_score(y_val, y_prob)))
 
-        return float(np.mean(auc_scores)) if auc_scores else 0.0
+            cal = _calibrate_threshold(
+                y_true=y_val,
+                y_prob=y_prob,
+                target_precision=target_precision,
+                min_recall=0.08,
+                min_pred_rate=0.02,
+                reward_to_risk=1.8,
+                trade_cost=0.05,
+            )
+            utility_scores.append(float(cal["utility"]))
+
+        if not ap_scores:
+            return 0.0
+
+        mean_ap = float(np.mean(ap_scores))
+        mean_utility = float(np.mean(utility_scores)) if utility_scores else 0.0
+        return mean_ap + 0.25 * mean_utility
 
     study = optuna.create_study(direction="maximize")
     study.optimize(objective, n_trials=n_trials, show_progress_bar=True)
 
-    log.info("Best AUC: %.4f", study.best_value)
+    log.info("Best tuning score: %.4f", study.best_value)
     log.info("Best params: %s", study.best_params)
 
     return dict(study.best_params)
@@ -677,13 +998,21 @@ def run_training(
     forward_bars: int = 5,
     min_gain_pct: float = 0.03,
     atr_multiplier: float = 0.0,
-    target_precision: float = 0.50,  # Exposed dynamically
+    target_precision: float = 0.60,  # Exposed dynamically
     progress_callback=None,
 ) -> dict:
     """
     Full training pipeline. Returns the metadata dict.
     """
     symbols = symbols or list(config.WATCHLIST)
+    target_precision = float(np.clip(target_precision, 0.35, 0.95))
+
+    if target_precision < 0.55:
+        log.warning(
+            "Target precision %.2f is quite low for swing trading. "
+            "Consider ≥0.60 unless your reward/risk is consistently high.",
+            target_precision,
+        )
     seen = set()
     unique_symbols = []
     for s in symbols:
@@ -744,7 +1073,7 @@ def run_training(
 
     # 2. Build dataset
     log.info("Step 2/3: Extracting features & labels…")
-    X, y, weights, sym_labels = build_dataset(
+    X, y, weights, sym_labels, sample_dates = build_dataset(
         data,
         forward_bars=forward_bars,
         min_gain_pct=min_gain_pct,
@@ -781,10 +1110,29 @@ def run_training(
     best_params = None
     if tune:
         log.info("Running Optuna hyperparameter search (100 trials)…")
-        best_params = tune_hyperparams(X, y, weights=weights, n_trials=100, forward_bars=forward_bars)
+        best_params = tune_hyperparams(
+            X,
+            y,
+            weights=weights,
+            n_trials=100,
+            forward_bars=forward_bars,
+            target_precision=target_precision,
+        )
 
     # Pass the target_precision dynamically down to the trainer
-    bst, meta = train_model(X, y, weights=weights, params=best_params, forward_bars=forward_bars, target_precision=target_precision)
+    bst, meta = train_model(
+        X,
+        y,
+        weights=weights,
+        params=best_params,
+        forward_bars=forward_bars,
+        target_precision=target_precision,
+        sample_dates=sample_dates,
+        min_recall=0.10,
+        min_pred_rate=0.03,
+        reward_to_risk=1.8,
+        trade_cost=0.05,
+    )
 
     # Add training metadata
     meta["symbols"] = sorted(data.keys())
@@ -808,24 +1156,47 @@ def run_training(
 
     # Print summary
     avg = meta["avg_metrics"]
+    avg_cal = meta.get("avg_metrics_at_calibrated", avg)
     cal_thresh = meta.get("calibrated_threshold", 0.40)
     oof_m = meta.get("oof_metrics_at_calibrated", {})
+    calibration = meta.get("threshold_calibration", {})
     log.info("=" * 60)
     log.info("TRAINING COMPLETE in %.1fs", meta["training_time_s"])
     log.info("  Samples : %d (%d pos / %d neg)", meta["n_samples"],
              meta["n_positive"], meta["n_negative"])
-    log.info("  CV Acc  : %.1f%%", avg["accuracy"] * 100)
-    log.info("  CV Prec : %.1f%%", avg["precision"] * 100)
-    log.info("  CV Rec  : %.1f%%", avg["recall"] * 100)
-    log.info("  CV F1   : %.3f", avg["f1"])
+    log.info("  CV @0.50 — Acc: %.1f%%  Prec: %.1f%%  Rec: %.1f%%  F1: %.3f",
+             avg["accuracy"] * 100,
+             avg["precision"] * 100,
+             avg["recall"] * 100,
+             avg["f1"])
+    log.info("  CV @cal  — Acc: %.1f%%  Prec: %.1f%%  Rec: %.1f%%  F1: %.3f",
+             avg_cal["accuracy"] * 100,
+             avg_cal["precision"] * 100,
+             avg_cal["recall"] * 100,
+             avg_cal["f1"])
     log.info("  CV AUC  : %.3f", avg["auc"])
-    log.info("  Calibrated Threshold: %.4f", cal_thresh)
+    log.info("  Calibrated Threshold: %.4f (mode=%s)",
+             cal_thresh,
+             calibration.get("selection_mode", "n/a"))
+    log.info("  Recommended ML_ENTRY_THRESHOLD: %.4f", cal_thresh)
+
+    current_live = float(getattr(config, "ML_ENTRY_THRESHOLD", cal_thresh))
+    if abs(current_live - cal_thresh) >= 0.02:
+        log.warning(
+            "Current config ML_ENTRY_THRESHOLD=%.3f differs from calibrated %.3f. "
+            "Consider updating config for alignment.",
+            current_live,
+            cal_thresh,
+        )
+
     if oof_m:
-        log.info("  OOF @ %.3f: prec=%.1f%%  rec=%.1f%%  f1=%.3f",
+        log.info("  OOF @ %.3f: prec=%.1f%%  rec=%.1f%%  f1=%.3f  expect=%.3f  signal-rate=%.1f%%",
                  cal_thresh,
                  oof_m.get("precision", 0) * 100,
                  oof_m.get("recall", 0) * 100,
-                 oof_m.get("f1", 0))
+                 oof_m.get("f1", 0),
+                 oof_m.get("expectancy", 0),
+                 oof_m.get("pred_rate", 0) * 100)
     log.info("=" * 60)
 
     # Top 10 features
@@ -853,8 +1224,8 @@ def main():
                         help="Minimum gain %% for positive label (default: 0.03 = 3%%)")
     parser.add_argument("--atr-multiplier", type=float, default=0.0,
                         help="ATR multiplier for volatility-adjusted labels (default: 0 = use static %%)")
-    parser.add_argument("--target-precision", type=float, default=0.50,
-                        help="Target precision for threshold calibration (default: 0.50)")
+    parser.add_argument("--target-precision", type=float, default=0.60,
+                        help="Target precision for threshold calibration (default: 0.60)")
     args = parser.parse_args()
 
     run_training(
