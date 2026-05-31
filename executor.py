@@ -158,6 +158,54 @@ class TradeExecutor:
         )
         return 1
 
+    def _finalize_exit(
+        self,
+        *,
+        symbol: str,
+        side: str,
+        qty: float,
+        entry_price: float,
+        requested_exit_price: float,
+        hold_days: int,
+        exit_reason: str,
+        order=None,
+    ) -> int:
+        """Record PDT/journal state only after the position is actually closed."""
+        fill_side = "buy" if side == "short" else "sell"
+        filled_price = self._poll_fill_price(order) if order is not None else None
+
+        try:
+            position = self.broker.get_position(symbol)
+        except Exception:
+            position = None
+
+        if position is not None and abs(float(position.qty)) > 0:
+            log.info(
+                "EXIT PENDING %s %s — order accepted but position remains open. "
+                "Deferring PDT/journal accounting until reconciliation.",
+                side.upper(), symbol,
+            )
+            return 0
+
+        fill_dt, recent_fill_price = self._get_recent_fill(symbol, fill_side)
+        actual_exit_price = recent_fill_price or filled_price or requested_exit_price
+
+        self.pdt.record_sell(symbol)
+        if side == "short":
+            trade_pnl = (entry_price - actual_exit_price) * qty
+        else:
+            trade_pnl = (actual_exit_price - entry_price) * qty
+
+        self.journal.record_exit(
+            symbol,
+            exit_price=requested_exit_price,
+            pnl=trade_pnl,
+            hold_days=hold_days,
+            exit_reason=exit_reason,
+            filled_price=actual_exit_price,
+        )
+        return 1
+
     def _poll_fill_price(self, order, timeout_secs: float = 5.0) -> float | None:
         """Poll an order for its filled_avg_price (market orders fill fast)."""
         if order is None:
@@ -632,23 +680,15 @@ class TradeExecutor:
                         _exit_order = self.broker.submit_market_cover(symbol, abs_qty)
                     else:
                         _exit_order = self.broker.submit_market_sell(symbol, abs_qty)
-                    self.pdt.record_sell(symbol)
-                    closed += 1
-                    # Journal exit — poll for actual fill price for slippage tracking
-                    _filled_price = self._poll_fill_price(_exit_order)
-                    if is_short:
-                        actual_exit = _filled_price or current_price
-                        trade_pnl = (entry_price - actual_exit) * abs_qty
-                    else:
-                        actual_exit = _filled_price or current_price
-                        trade_pnl = (actual_exit - entry_price) * abs_qty
-                    self.journal.record_exit(
-                        symbol,
-                        exit_price=current_price,
-                        pnl=trade_pnl,
+                    closed += self._finalize_exit(
+                        symbol=symbol,
+                        side="short" if is_short else "long",
+                        qty=abs_qty,
+                        entry_price=entry_price,
+                        requested_exit_price=current_price,
                         hold_days=hold_days,
                         exit_reason=", ".join(signal.get("reasons", [])),
-                        filled_price=_filled_price if _filled_price else current_price,
+                        order=_exit_order,
                     )
                 except Exception as exc:
                     log.error("%s order failed for %s: %s",
@@ -1505,15 +1545,23 @@ class TradeExecutor:
     def run_cycle(self) -> None:
         """Execute one full scan cycle: exits first, then entries."""
         try:
-            if not self.broker.is_market_open():
-                log.info("Market is closed – skipping cycle")
+            session = self.broker.get_trading_session()
+            if session == "closed":
+                log.info("Trading session is closed – skipping cycle")
+                return
+            if session != "regular" and not getattr(config, "EXTENDED_HOURS_TRADING", False):
+                log.info(
+                    "Extended-hours session detected (%s) but extended trading is disabled – skipping cycle",
+                    session,
+                )
                 return
         except Exception as exc:
             log.warning("Network error while checking market clock: %s – skipping cycle", exc)
             return
 
         log.info("=" * 60)
-        log.info("CYCLE START  equity=$%.2f  positions=%d",
+        log.info("CYCLE START  session=%s  equity=$%.2f  positions=%d",
+                 session,
                  self.broker.get_equity(),
                  len(self.broker.get_positions()))
         log.info("=" * 60)

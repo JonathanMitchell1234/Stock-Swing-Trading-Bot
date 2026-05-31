@@ -313,6 +313,12 @@ DYNAMIC_THRESHOLD_ADJUSTMENT = 1  # +/- this amount
 USE_LIMIT_ORDERS = True             # True = limit buy, False = market buy
 LIMIT_ORDER_OFFSET_PCT = 0.001      # limit price = last_price * (1 + offset), e.g. 0.1% above
 LIMIT_ORDER_TIF = "day"             # time-in-force: "day" cancels at market close if unfilled
+# Enable Alpaca extended-hours routing outside 9:30am-4:00pm ET.
+# Alpaca only accepts extended-hours eligible LIMIT orders, so the broker
+# automatically converts market-style entries/exits into marketable limit
+# orders when this is enabled.
+EXTENDED_HOURS_TRADING = True
+EXTENDED_HOURS_LIMIT_OFFSET_PCT = 0.003   # wider buffer for thinner after-hours spreads
 
 # ── VWAP Execution (micro-slicing for high-conviction ML setups) ──────────
 # When a long entry has ML probability >= VWAP_ML_THRESHOLD the bot splits

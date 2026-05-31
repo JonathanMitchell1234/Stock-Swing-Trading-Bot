@@ -151,7 +151,7 @@ def run_loop() -> None:
             # double exit scans that could submit duplicate sell orders.
             if time.time() - _last_full_cycle_time[0] < 60:
                 return
-            if executor.broker.is_market_open():
+            if executor.broker.is_trading_session_open():
                 executor.refresh()
                 executor.scan_exits()
         except Exception as exc:

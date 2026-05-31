@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import datetime as dt
 from typing import List, Optional
+from zoneinfo import ZoneInfo
 
 import alpaca_trade_api as tradeapi
 import pandas as pd
@@ -15,6 +16,11 @@ import config
 from logger import get_logger
 
 log = get_logger("broker")
+EASTERN = ZoneInfo("America/New_York")
+CORE_OPEN = dt.time(9, 30)
+CORE_CLOSE = dt.time(16, 0)
+EXTENDED_OPEN = dt.time(4, 0)
+EXTENDED_CLOSE = dt.time(20, 0)
 
 
 class AlpacaBroker:
@@ -62,6 +68,130 @@ class AlpacaBroker:
     def has_position(self, symbol: str) -> bool:
         return self.get_position(symbol) is not None
 
+    def _round_order_price(self, price: float) -> float:
+        decimals = 2 if price >= 1 else 4
+        return round(price, decimals)
+
+    def _clock_timestamp_et(self, clock) -> dt.datetime:
+        timestamp = getattr(clock, "timestamp", None)
+        if isinstance(timestamp, str):
+            timestamp = dt.datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+        if timestamp is None:
+            timestamp = dt.datetime.now(dt.timezone.utc)
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=dt.timezone.utc)
+        return timestamp.astimezone(EASTERN)
+
+    def get_trading_session(self) -> str:
+        """Return the current Alpaca equities session: regular, premarket, afterhours, or closed."""
+        clock = self._get_clock_with_retry()
+        if clock.is_open:
+            return "regular"
+
+        now_et = self._clock_timestamp_et(clock)
+        if now_et.weekday() >= 5:
+            return "closed"
+
+        now_time = now_et.timetz().replace(tzinfo=None)
+        if EXTENDED_OPEN <= now_time < CORE_OPEN:
+            return "premarket"
+        if CORE_CLOSE <= now_time < EXTENDED_CLOSE:
+            return "afterhours"
+        return "closed"
+
+    def is_extended_hours_session(self) -> bool:
+        return self.get_trading_session() in ("premarket", "afterhours")
+
+    def is_trading_session_open(self) -> bool:
+        session = self.get_trading_session()
+        if session == "regular":
+            return True
+        return bool(
+            getattr(config, "EXTENDED_HOURS_TRADING", False)
+            and session in ("premarket", "afterhours")
+        )
+
+    def _should_use_extended_hours_orders(self) -> bool:
+        return bool(
+            getattr(config, "EXTENDED_HOURS_TRADING", False)
+            and self.is_extended_hours_session()
+        )
+
+    def _extended_order_tif(self) -> str:
+        tif = str(getattr(config, "LIMIT_ORDER_TIF", "day")).lower()
+        if tif not in ("day", "gtc"):
+            log.warning(
+                "Extended-hours orders require day/gtc time_in_force; overriding %s to day",
+                tif,
+            )
+            return "day"
+        if getattr(config, "FRACTIONAL_SHARES", False) and tif != "day":
+            log.warning(
+                "Extended-hours fractional orders require day time_in_force; overriding %s to day",
+                tif,
+            )
+            return "day"
+        return tif
+
+    def _normalise_order_qty(self, qty: float):
+        if not getattr(config, "FRACTIONAL_SHARES", False) and float(qty).is_integer():
+            return int(qty)
+        return qty
+
+    def _get_latest_bid_ask(self, symbol: str) -> tuple[float | None, float | None]:
+        try:
+            quote = self.api.get_latest_quote(symbol)
+        except Exception as exc:
+            log.debug("Quote lookup failed for %s: %s", symbol, exc)
+            return None, None
+
+        def _extract(*names: str) -> float | None:
+            for name in names:
+                value = getattr(quote, name, None)
+                if value is None:
+                    continue
+                try:
+                    numeric = float(value)
+                except (TypeError, ValueError):
+                    continue
+                if numeric > 0:
+                    return numeric
+            return None
+
+        bid = _extract("bidprice", "bid_price", "bp")
+        ask = _extract("askprice", "ask_price", "ap")
+        return bid, ask
+
+    def _get_marketable_limit_price(self, symbol: str, side: str, offset_pct: float) -> float:
+        bid, ask = self._get_latest_bid_ask(symbol)
+        if side == "buy":
+            reference = ask or self.get_latest_price(symbol)
+            return self._round_order_price(reference * (1 + offset_pct))
+        reference = bid or self.get_latest_price(symbol)
+        return self._round_order_price(reference * (1 - offset_pct))
+
+    def _submit_limit_order(
+        self,
+        *,
+        symbol: str,
+        qty: float,
+        side: str,
+        limit_price: float,
+        time_in_force: str,
+        extended_hours: bool = False,
+    ):
+        order_params = dict(
+            symbol=symbol,
+            qty=self._normalise_order_qty(qty),
+            side=side,
+            type="limit",
+            limit_price=self._round_order_price(limit_price),
+            time_in_force=time_in_force,
+        )
+        if extended_hours:
+            order_params["extended_hours"] = True
+        return self.api.submit_order(**order_params)
+
     # ── Orders ───────────────────────────────────────────────
     def submit_limit_buy(
         self,
@@ -81,7 +211,7 @@ class AlpacaBroker:
             log.warning("Skipping limit buy – qty=%.4f for %s", qty, symbol)
             return None
 
-        limit_price = round(limit_price, 2)
+        limit_price = self._round_order_price(limit_price)
         log.info(
             "LIMIT BUY  %s  qty=%.4f  limit=%.2f  sl=%.2f  tp=%.2f",
             symbol,
@@ -91,12 +221,27 @@ class AlpacaBroker:
             take_profit or 0,
         )
 
-        if config.FRACTIONAL_SHARES:
-            order = self.api.submit_order(
+        use_extended_hours = self._should_use_extended_hours_orders()
+        if use_extended_hours:
+            if stop_loss or take_profit:
+                log.info(
+                    "Extended-hours entry for %s skips stop/take-profit attachments until the core session.",
+                    symbol,
+                )
+            return self._submit_limit_order(
                 symbol=symbol,
                 qty=qty,
                 side="buy",
-                type="limit",
+                limit_price=limit_price,
+                time_in_force=self._extended_order_tif(),
+                extended_hours=True,
+            )
+
+        if config.FRACTIONAL_SHARES:
+            order = self._submit_limit_order(
+                symbol=symbol,
+                qty=qty,
+                side="buy",
                 limit_price=limit_price,
                 time_in_force=config.LIMIT_ORDER_TIF,
             )
@@ -247,16 +392,28 @@ class AlpacaBroker:
             log.warning("Skipping buy – qty=%.4f for %s", qty, symbol)
             return None
 
+        use_extended_hours = self._should_use_extended_hours_orders()
+
         # ── Route to limit order if configured ──────────────
-        if config.USE_LIMIT_ORDERS:
+        if config.USE_LIMIT_ORDERS or use_extended_hours:
             try:
-                last_price = self.get_latest_price(symbol)
-                limit_price = round(last_price * (1 + config.LIMIT_ORDER_OFFSET_PCT), 2)
+                offset_pct = (
+                    config.EXTENDED_HOURS_LIMIT_OFFSET_PCT
+                    if use_extended_hours
+                    else config.LIMIT_ORDER_OFFSET_PCT
+                )
+                limit_price = self._get_marketable_limit_price(symbol, "buy", offset_pct)
                 return self.submit_limit_buy(
                     symbol, qty, limit_price,
                     stop_loss=stop_loss, take_profit=take_profit,
                 )
             except Exception as exc:
+                if use_extended_hours:
+                    log.error(
+                        "Could not price extended-hours buy for %s (%s) — no market-order fallback outside core session",
+                        symbol, exc,
+                    )
+                    raise
                 log.warning(
                     "Could not fetch price for limit order on %s (%s) – falling back to market order",
                     symbol, exc,
@@ -309,9 +466,26 @@ class AlpacaBroker:
         return self.api.submit_order(**order_params)
 
     def submit_market_sell(self, symbol: str, qty: float):
-        """Submit a market sell (exit position)."""
+        """Submit an exit sell order, using an extended-hours limit order when required."""
         if qty <= 0:
             return None
+
+        if self._should_use_extended_hours_orders():
+            limit_price = self._get_marketable_limit_price(
+                symbol,
+                "sell",
+                config.EXTENDED_HOURS_LIMIT_OFFSET_PCT,
+            )
+            log.info("EXTENDED HOURS SELL %s  qty=%.4f  limit=%.2f", symbol, qty, limit_price)
+            return self._submit_limit_order(
+                symbol=symbol,
+                qty=qty,
+                side="sell",
+                limit_price=limit_price,
+                time_in_force=self._extended_order_tif(),
+                extended_hours=True,
+            )
+
         log.info("SELL %s  qty=%.4f", symbol, qty)
         return self.api.submit_order(
             symbol=symbol,
@@ -345,35 +519,56 @@ class AlpacaBroker:
             symbol, qty, stop_loss or 0, take_profit or 0,
         )
 
+        use_extended_hours = self._should_use_extended_hours_orders()
+
         # Use limit order routing if configured
-        if config.USE_LIMIT_ORDERS:
+        if config.USE_LIMIT_ORDERS or use_extended_hours:
             try:
-                last_price = self.get_latest_price(symbol)
-                # For shorts, limit BELOW current price (willing to sell at slightly less)
-                limit_price = round(last_price * (1 - config.LIMIT_ORDER_OFFSET_PCT), 2)
-                order = self.api.submit_order(
+                offset_pct = (
+                    config.EXTENDED_HOURS_LIMIT_OFFSET_PCT
+                    if use_extended_hours
+                    else config.LIMIT_ORDER_OFFSET_PCT
+                )
+                limit_price = self._get_marketable_limit_price(symbol, "sell", offset_pct)
+                order = self._submit_limit_order(
                     symbol=symbol,
                     qty=qty,
                     side="sell",
-                    type="limit",
                     limit_price=limit_price,
-                    time_in_force=config.LIMIT_ORDER_TIF,
+                    time_in_force=(
+                        self._extended_order_tif()
+                        if use_extended_hours
+                        else config.LIMIT_ORDER_TIF
+                    ),
+                    extended_hours=use_extended_hours,
                 )
                 # Attach stop-loss (buy-to-cover) as separate order
                 if stop_loss:
-                    try:
-                        self.api.submit_order(
-                            symbol=symbol,
-                            qty=qty,
-                            side="buy",
-                            type="stop",
-                            stop_price=round(stop_loss, 2),
-                            time_in_force="day",
+                    if use_extended_hours:
+                        log.info(
+                            "Extended-hours short entry for %s skips stop-loss attachment until the core session.",
+                            symbol,
                         )
-                    except Exception as exc:
-                        log.warning("Short stop-loss order failed for %s: %s", symbol, exc)
+                    else:
+                        try:
+                            self.api.submit_order(
+                                symbol=symbol,
+                                qty=qty,
+                                side="buy",
+                                type="stop",
+                                stop_price=round(stop_loss, 2),
+                                time_in_force="day",
+                            )
+                        except Exception as exc:
+                            log.warning("Short stop-loss order failed for %s: %s", symbol, exc)
                 return order
             except Exception as exc:
+                if use_extended_hours:
+                    log.error(
+                        "Extended-hours short sell failed for %s (%s) — no market-order fallback outside core session",
+                        symbol, exc,
+                    )
+                    raise
                 log.warning(
                     "Limit short sell failed for %s (%s) – falling back to market",
                     symbol, exc,
@@ -403,9 +598,26 @@ class AlpacaBroker:
         return order
 
     def submit_market_cover(self, symbol: str, qty: float):
-        """Buy-to-cover: close a short position by buying shares back."""
+        """Buy-to-cover, using an extended-hours limit order when required."""
         if qty <= 0:
             return None
+
+        if self._should_use_extended_hours_orders():
+            limit_price = self._get_marketable_limit_price(
+                symbol,
+                "buy",
+                config.EXTENDED_HOURS_LIMIT_OFFSET_PCT,
+            )
+            log.info("EXTENDED HOURS COVER %s  qty=%.4f  limit=%.2f", symbol, qty, limit_price)
+            return self._submit_limit_order(
+                symbol=symbol,
+                qty=qty,
+                side="buy",
+                limit_price=limit_price,
+                time_in_force=self._extended_order_tif(),
+                extended_hours=True,
+            )
+
         log.info("COVER (buy-to-cover) %s  qty=%.4f", symbol, qty)
         return self.api.submit_order(
             symbol=symbol,
