@@ -791,6 +791,8 @@ _CONFIG_EDITABLE_KEYS = {
     "BARS_LOOKBACK",
     # Scheduling
     "SCAN_INTERVAL_MINUTES", "CHECK_EXITS_MINUTES",
+    # Extended hours execution
+    "EXTENDED_HOURS_TRADING", "EXTENDED_HOURS_LIMIT_OFFSET_PCT",
     # Sector
     "MAX_PER_SECTOR",
     # PDT
