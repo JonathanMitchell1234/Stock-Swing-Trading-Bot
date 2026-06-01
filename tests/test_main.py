@@ -17,3 +17,10 @@ def test_graceful_shutdown_stops_news_monitor_and_saves_pdt(monkeypatch):
 
     assert exc.value.code == 0
     assert calls == ["stop", "save"]
+
+
+def test_should_trigger_session_open_cycle_only_on_closed_to_open_transition():
+    assert main._should_trigger_session_open_cycle(False, True) is True
+    assert main._should_trigger_session_open_cycle(True, True) is False
+    assert main._should_trigger_session_open_cycle(False, False) is False
+    assert main._should_trigger_session_open_cycle(None, True) is False

@@ -8,6 +8,7 @@ from executor import TradeExecutor
 class DummyPDT:
     def __init__(self):
         self.calls = []
+        self.sell_calls = []
         self._buy_times = {}
 
     def open_symbols(self):
@@ -16,6 +17,9 @@ class DummyPDT:
     def record_buy(self, symbol, fill_date=None):
         self.calls.append((symbol, fill_date))
 
+    def record_sell(self, symbol):
+        self.sell_calls.append(symbol)
+
     def _save(self):
         return None
 
@@ -23,12 +27,16 @@ class DummyPDT:
 class DummyJournal:
     def __init__(self):
         self.entries = []
+        self.exits = []
 
     def get_open_trades(self):
         return []
 
     def record_entry(self, *args, **kwargs):
         self.entries.append((args, kwargs))
+
+    def record_exit(self, *args, **kwargs):
+        self.exits.append((args, kwargs))
 
 
 class DummyBroker:
@@ -117,3 +125,48 @@ def test_get_recent_fill_parses_nanosecond_timestamp():
 
     assert fill_dt == dt.datetime(2026, 4, 13, 14, 45, 19, 251336, tzinfo=dt.timezone.utc)
     assert fill_price == 101.5
+
+
+def test_finalize_exit_defers_accounting_until_position_is_closed():
+    position = SimpleNamespace(symbol="AAPL", qty="1", avg_entry_price="100")
+
+    executor = TradeExecutor.__new__(TradeExecutor)
+    executor.broker = DummyBroker(positions=[position])
+    executor.pdt = DummyPDT()
+    executor.journal = DummyJournal()
+    executor._poll_fill_price = lambda order: None
+    executor._get_recent_fill = lambda symbol, side: (None, None)
+
+    closed = executor._finalize_exit(
+        symbol="AAPL",
+        side="long",
+        qty=1.0,
+        entry_price=100.0,
+        requested_exit_price=98.0,
+        hold_days=3,
+        exit_reason="signal",
+        order=SimpleNamespace(id="1"),
+    )
+
+    assert closed == 0
+    assert executor.pdt.sell_calls == []
+    assert executor.journal.exits == []
+
+
+def test_run_cycle_executes_during_after_hours_when_enabled(monkeypatch):
+    monkeypatch.setattr(config, "EXTENDED_HOURS_TRADING", True)
+
+    executor = TradeExecutor.__new__(TradeExecutor)
+    executor.broker = SimpleNamespace(
+        get_trading_session=lambda: "afterhours",
+        get_equity=lambda: 1000.0,
+        get_positions=lambda: [],
+    )
+
+    calls = []
+    executor.scan_exits = lambda: calls.append("exits")
+    executor.scan_entries = lambda: calls.append("entries")
+
+    executor.run_cycle()
+
+    assert calls == ["exits", "entries"]

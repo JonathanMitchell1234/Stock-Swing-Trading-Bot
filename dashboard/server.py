@@ -17,6 +17,7 @@ import os
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from zoneinfo import ZoneInfo
 import pandas as pd
 # ── make sure the parent dir (Trader/) is importable ─────────
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -39,6 +40,13 @@ app.add_middleware(
 STATIC_DIR  = Path(__file__).parent / "static"
 LOG_PATH    = Path(__file__).parent.parent / "logs" / "trader.log"
 CHART_PATH  = Path(__file__).parent.parent / "logs" / "backtest_equity.png"
+EASTERN     = ZoneInfo("America/New_York")
+CORE_OPEN   = dt.time(9, 30)
+CORE_CLOSE  = dt.time(16, 0)
+EXT_OPEN    = dt.time(4, 0)
+EXT_CLOSE   = dt.time(20, 0)
+OVN_OPEN    = dt.time(20, 0)
+OVN_CLOSE   = dt.time(4, 0)
 
 # ─────────────────────────────────────────────────────────────
 # Helpers
@@ -77,6 +85,42 @@ def _bars_to_df(bars, symbol: str) -> "pd.DataFrame":
 
 def _pct(val) -> float:
     return round(_safe_float(val) * 100, 2)
+
+
+def _clock_timestamp_et(clock) -> dt.datetime:
+    timestamp = getattr(clock, "timestamp", None)
+    if isinstance(timestamp, str):
+        timestamp = dt.datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+    if timestamp is None:
+        timestamp = dt.datetime.now(dt.timezone.utc)
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=dt.timezone.utc)
+    return timestamp.astimezone(EASTERN)
+
+
+def _get_trading_session_from_clock(clock) -> str:
+    if clock.is_open:
+        return "regular"
+
+    now_et = _clock_timestamp_et(clock)
+    weekday = now_et.weekday()
+    now_time = now_et.timetz().replace(tzinfo=None)
+
+    if now_time >= OVN_OPEN:
+        return "overnight" if weekday in (6, 0, 1, 2, 3) else "closed"
+    if now_time < OVN_CLOSE:
+        return "overnight" if weekday in (0, 1, 2, 3, 4) else "closed"
+    if weekday >= 5:
+        return "closed"
+    if EXT_OPEN <= now_time < CORE_OPEN:
+        return "premarket"
+    if CORE_CLOSE <= now_time < EXT_CLOSE:
+        return "afterhours"
+    return "closed"
+
+
+def _is_trading_session_open(session: str) -> bool:
+    return session in ("regular", "premarket", "afterhours", "overnight")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -249,11 +293,14 @@ async def get_clock():
     try:
         api = _get_api()
         clock = api.get_clock()
+        session = _get_trading_session_from_clock(clock)
         return {
-            "is_open":    clock.is_open,
-            "next_open":  str(clock.next_open)[:16].replace("T", " "),
-            "next_close": str(clock.next_close)[:16].replace("T", " "),
-            "timestamp":  str(clock.timestamp)[:19].replace("T", " "),
+            "is_open":              clock.is_open,
+            "trading_session_open": _is_trading_session_open(session),
+            "session":              session,
+            "next_open":            str(clock.next_open)[:16].replace("T", " "),
+            "next_close":           str(clock.next_close)[:16].replace("T", " "),
+            "timestamp":            str(clock.timestamp)[:19].replace("T", " "),
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -524,16 +571,19 @@ async def _sse_generator():
             } for p in positions]
 
             clock = api.get_clock()
+            session = _get_trading_session_from_clock(clock)
 
             payload = {
-                "ts":            dt.datetime.now().strftime("%H:%M:%S"),
-                "equity":        round(equity, 2),
-                "cash":          round(cash, 2),
-                "day_pnl":       round(day_pnl, 2),
-                "day_pnl_pct":   round(day_pnl_pct, 2),
-                "n_positions":   len(positions),
-                "positions":     pos_list,
-                "market_open":   clock.is_open,
+                "ts":                   dt.datetime.now().strftime("%H:%M:%S"),
+                "equity":               round(equity, 2),
+                "cash":                 round(cash, 2),
+                "day_pnl":              round(day_pnl, 2),
+                "day_pnl_pct":          round(day_pnl_pct, 2),
+                "n_positions":          len(positions),
+                "positions":            pos_list,
+                "market_open":          clock.is_open,
+                "trading_session_open": _is_trading_session_open(session),
+                "market_session":       session,
                 "daytrade_count": int(getattr(acct, "daytrade_count", 0)),
             }
             yield f"data: {json.dumps(payload)}\n\n"

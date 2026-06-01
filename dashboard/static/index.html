@@ -3903,19 +3903,46 @@
 				return r.json();
 			}
 
+			function formatSessionLabel(session) {
+				switch (session) {
+					case "regular":
+						return "Market open";
+					case "premarket":
+						return "Pre-market trading active";
+					case "afterhours":
+						return "After-hours trading active";
+					case "overnight":
+						return "Overnight trading active";
+					default:
+						return "Market closed";
+				}
+			}
+
+			function renderMarketStatus(data) {
+				const dot = $("market-dot");
+				const label = $("market-label");
+				const tradingOpen = Boolean(data.trading_session_open ?? data.market_open ?? data.is_open);
+				const session = data.market_session || data.session || (tradingOpen ? "regular" : "closed");
+				dot.className = tradingOpen ? "status-dot open" : "status-dot closed";
+
+				let text = formatSessionLabel(session);
+				if (tradingOpen) {
+					if (session === "regular" && data.next_close) {
+						text += ` · closes ${data.next_close}`;
+					} else if (data.next_open) {
+						text += ` · next regular open ${data.next_open}`;
+					}
+				} else if (data.next_open) {
+					text += ` · opens ${data.next_open}`;
+				}
+				label.textContent = text;
+			}
+
 			/* ── Clock / market status ───────────────────────────────── */
 			async function loadClock() {
 				try {
 					const d = await apiFetch("/api/clock");
-					const dot = $("market-dot");
-					const label = $("market-label");
-					if (d.is_open) {
-						dot.className = "status-dot open";
-						label.textContent = `Market open · closes ${d.next_close}`;
-					} else {
-						dot.className = "status-dot closed";
-						label.textContent = `Market closed · opens ${d.next_open}`;
-					}
+					renderMarketStatus(d);
 				} catch (e) {
 					$("market-label").textContent = "Clock unavailable";
 				}
@@ -4789,8 +4816,7 @@
 						setInner("stat-daytrades", `<span class="${dtClass}">${dtc}</span>`);
 
 						// Market status
-						const dot = $("market-dot");
-						dot.className = d.market_open ? "status-dot open" : "status-dot closed";
+						renderMarketStatus(d);
 
 						// Refresh positions table from SSE data (lightweight)
 						if (d.positions && d.positions.length > 0) {
