@@ -31,6 +31,11 @@ _executor: TradeExecutor | None = None
 _news_monitor: NewsMonitor | None = None
 
 
+def _should_trigger_session_open_cycle(previously_open: bool | None, currently_open: bool) -> bool:
+    """Return True only when a trading session has just transitioned from closed to open."""
+    return previously_open is False and currently_open
+
+
 def _graceful_shutdown(signum, frame):
     """Save PDT ledger and exit cleanly on SIGTERM/SIGINT."""
     sig_name = signal.Signals(signum).name if hasattr(signal, "Signals") else str(signum)
@@ -132,6 +137,7 @@ def run_loop() -> None:
 
     _morning_done_date: list[dt.date] = [None]  # mutable container for closure
     _last_full_cycle_time: list[float] = [0.0]   # timestamp of last full_cycle run
+    _last_session_open: list[bool | None] = [None]
 
     def morning_job():
         try:
@@ -159,17 +165,31 @@ def run_loop() -> None:
 
     def full_cycle():
         try:
+            if time.time() - _last_full_cycle_time[0] < 60:
+                return
             executor.run_cycle()
             _last_full_cycle_time[0] = time.time()
         except Exception as exc:
             log.error("full_cycle failed (will retry next cycle): %s", exc, exc_info=True)
 
+    def session_watchdog():
+        try:
+            session_open = executor.broker.is_trading_session_open()
+            if _should_trigger_session_open_cycle(_last_session_open[0], session_open):
+                log.info("Trading session opened — running immediate cycle")
+                full_cycle()
+            _last_session_open[0] = session_open
+        except Exception as exc:
+            log.error("session_watchdog failed (will retry next cycle): %s", exc, exc_info=True)
+
     # Schedule jobs
     schedule.every(5).minutes.do(morning_job)          # poll until market opens & runs once
+    schedule.every(1).minutes.do(session_watchdog)     # catch session-open transitions promptly
     schedule.every(config.CHECK_EXITS_MINUTES).minutes.do(exit_check)
     schedule.every(config.SCAN_INTERVAL_MINUTES).minutes.do(full_cycle)
 
     # Run the first cycle immediately
+    session_watchdog()
     morning_job()
     full_cycle()
 

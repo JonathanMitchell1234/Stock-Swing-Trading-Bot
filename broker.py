@@ -21,6 +21,8 @@ CORE_OPEN = dt.time(9, 30)
 CORE_CLOSE = dt.time(16, 0)
 EXTENDED_OPEN = dt.time(4, 0)
 EXTENDED_CLOSE = dt.time(20, 0)
+OVERNIGHT_OPEN = dt.time(20, 0)
+OVERNIGHT_CLOSE = dt.time(4, 0)
 
 
 class AlpacaBroker:
@@ -83,16 +85,25 @@ class AlpacaBroker:
         return timestamp.astimezone(EASTERN)
 
     def get_trading_session(self) -> str:
-        """Return the current Alpaca equities session: regular, premarket, afterhours, or closed."""
+        """Return the current Alpaca equities session: regular, premarket, afterhours, overnight, or closed."""
         clock = self._get_clock_with_retry()
         if clock.is_open:
             return "regular"
 
         now_et = self._clock_timestamp_et(clock)
-        if now_et.weekday() >= 5:
+        weekday = now_et.weekday()
+        now_time = now_et.timetz().replace(tzinfo=None)
+
+        # Alpaca overnight equities trading runs 8:00pm-4:00am ET,
+        # reopening on Sunday night for the Monday session.
+        if now_time >= OVERNIGHT_OPEN:
+            return "overnight" if weekday in (6, 0, 1, 2, 3) else "closed"
+        if now_time < OVERNIGHT_CLOSE:
+            return "overnight" if weekday in (0, 1, 2, 3, 4) else "closed"
+
+        if weekday >= 5:
             return "closed"
 
-        now_time = now_et.timetz().replace(tzinfo=None)
         if EXTENDED_OPEN <= now_time < CORE_OPEN:
             return "premarket"
         if CORE_CLOSE <= now_time < EXTENDED_CLOSE:
@@ -100,7 +111,7 @@ class AlpacaBroker:
         return "closed"
 
     def is_extended_hours_session(self) -> bool:
-        return self.get_trading_session() in ("premarket", "afterhours")
+        return self.get_trading_session() in ("premarket", "afterhours", "overnight")
 
     def is_trading_session_open(self) -> bool:
         session = self.get_trading_session()
@@ -108,7 +119,7 @@ class AlpacaBroker:
             return True
         return bool(
             getattr(config, "EXTENDED_HOURS_TRADING", False)
-            and session in ("premarket", "afterhours")
+            and session in ("premarket", "afterhours", "overnight")
         )
 
     def _should_use_extended_hours_orders(self) -> bool:
