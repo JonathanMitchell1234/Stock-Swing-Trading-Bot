@@ -170,3 +170,47 @@ def test_run_cycle_executes_during_after_hours_when_enabled(monkeypatch):
     executor.run_cycle()
 
     assert calls == ["exits", "entries"]
+
+
+def test_try_long_entry_caps_vol_scaled_qty_to_buying_power(monkeypatch):
+    monkeypatch.setattr(config, "FRACTIONAL_SHARES", True)
+    monkeypatch.setattr(config, "MAX_PORTFOLIO_EXPOSURE_PCT", 0.95)
+    monkeypatch.setattr(config, "VWAP_EXECUTION_ENABLED", False)
+
+    bought = []
+    executor = TradeExecutor.__new__(TradeExecutor)
+    executor.broker = SimpleNamespace(
+        get_buying_power=lambda: 100.0,
+        submit_market_buy=lambda sym, qty, **kwargs: bought.append((sym, qty)),
+    )
+    executor.risk = SimpleNamespace(
+        equity=1000.0,
+        compute_stop_loss=lambda p, atr, sym: p * 0.95,
+        compute_take_profit=lambda p, atr, sym: p * 1.10,
+        calculate_position_size=lambda entry_price, stop_price, buying_power: 0.401,
+    )
+    executor._finalize_entry = lambda **kwargs: 1
+
+    c = {
+        "symbol": "RTX",
+        "df": None,
+    }
+    # Mock check_entry to return a signal
+    monkeypatch.setattr("executor.check_entry", lambda df, **kwargs: {
+        "action": "BUY", "price": 200.0, "atr": 5.0, "score": 8, "reason": "test"
+    })
+
+    # Available BP = $100 -> usable_bp = $95.
+    # At price $200, max_bp_qty = 95 / 200 = 0.475.
+    # If base qty is 0.401 and vol_scale is 1.5 -> raw scaled would be 0.6015.
+    # But capped to max_bp_qty = 0.475.
+    res = executor._try_long_entry(
+        c, weekly_bull=True, spy_df=None, vixy_df=None,
+        dyn_threshold=5, vol_scale=1.5, vix_size_scale=1.0, sector="Industrials"
+    )
+
+    assert res == 1
+    assert len(bought) == 1
+    assert bought[0][0] == "RTX"
+    assert bought[0][1] == 0.475
+

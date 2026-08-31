@@ -42,7 +42,7 @@ _SHIELD_PATH = Path(__file__).parent / "ejection_shield.json"
 def _load_shield() -> dict:
     """Load ejection shield config from disk, returning safe defaults on error."""
     try:
-        return json.loads(_SHIELD_PATH.read_text())
+        return json.loads(_SHIELD_PATH.read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError):
         return {}
 

@@ -98,6 +98,25 @@ def _score_entry_details(df: pd.DataFrame, weekly_bullish: bool = True) -> dict:
         details["block_reasons"].append("Missing key indicators (RSI/ATR/ADX)")
         return details
 
+    # ── Trend integrity filter ───────────────────────────────
+    # Hard block when price is below EMA-50 AND momentum is decaying.
+    # This prevents the ML model from overriding clearly bearish setups
+    # (e.g. HOOD at -6% momentum below EMA-50 with ML prob 0.51).
+    if price < ema_trend:
+        mom_threshold = getattr(config, "ENTRY_MOMENTUM_DECAY_BLOCK", -0.03)
+        if len(df) >= config.MOMENTUM_LOOKBACK + 1:
+            past_price = df.iloc[-(config.MOMENTUM_LOOKBACK + 1)]["close"]
+            if not pd.isna(past_price) and past_price > 0:
+                mom = (price - past_price) / past_price
+                if mom < mom_threshold:
+                    reason = (
+                        f"Price below EMA-50, Momentum decay ({mom*100:.1f}%) "
+                        f"below {mom_threshold*100:.0f}% — trend broken"
+                    )
+                    details["factors"].append(reason)
+                    details["block_reasons"].append(reason)
+                    return details
+
     # Gap-up filter: skip entries after exhaustion gaps.
     prev_close = prv["close"]
     today_open = cur["open"]
@@ -364,7 +383,8 @@ def check_entry(df: pd.DataFrame, weekly_bullish: bool = True,
 # ─────────────────────────────────────────────
 def check_exit(df: pd.DataFrame, entry_price: float = 0.0,
                hold_days: int = 0,
-               explain: bool = False) -> dict | None:
+               explain: bool = False,
+               symbol: str = "") -> dict | None:
     """
     Evaluate whether an existing position should be closed.
 
@@ -407,6 +427,39 @@ def check_exit(df: pd.DataFrame, entry_price: float = 0.0,
 
     hard_reasons = []
     soft_reasons = []
+
+    # ── HARD: max loss circuit breaker ───────────────────────
+    # Cap downside at MAX_LOSS_EXIT_PCT to prevent deep losers like
+    # TZA -16%, MU -11%, COIN -8% from bleeding further.
+    max_loss_pct = getattr(config, "MAX_LOSS_EXIT_PCT", -0.08)
+    if entry_price > 0:
+        unrealised_pct = (price - entry_price) / entry_price
+        # Leveraged ETFs get a tighter max-loss cap
+        lev_symbols = getattr(config, "LEVERAGED_ETF_SYMBOLS", {})
+        if symbol in lev_symbols:
+            lev_factor = lev_symbols[symbol]
+            lev_loss_map = getattr(config, "LEVERAGED_MAX_LOSS_PCT", {})
+            max_loss_pct = lev_loss_map.get(lev_factor, max_loss_pct)
+        if unrealised_pct <= max_loss_pct:
+            hard_reasons.append(
+                f"Max loss breached ({unrealised_pct*100:.1f}% <= "
+                f"{max_loss_pct*100:.0f}% cap)"
+            )
+
+    # ── HARD: leveraged ETF max hold duration ────────────────
+    # Leveraged ETFs suffer from volatility decay (beta slippage) when
+    # held beyond a single day.  Force exit after max hold days.
+    if symbol and getattr(config, "LEVERAGED_ETF_MAX_HOLD", False):
+        lev_symbols = getattr(config, "LEVERAGED_ETF_SYMBOLS", {})
+        if symbol in lev_symbols:
+            lev_factor = lev_symbols[symbol]
+            max_hold_map = getattr(config, "LEVERAGED_MAX_HOLD_DAYS", {})
+            max_hold = max_hold_map.get(lev_factor, 5)
+            if hold_days >= max_hold:
+                hard_reasons.append(
+                    f"Leveraged ETF hold limit ({hold_days}d >= "
+                    f"{max_hold}d max for {lev_factor}× leverage)"
+                )
 
     # ── HARD: price below BOTH EMA-50 and EMA-200 (trend destroyed) ──
     if ema_200 is not None and not pd.isna(ema_200):
@@ -487,4 +540,495 @@ def check_exit(df: pd.DataFrame, entry_price: float = 0.0,
     if explain:
         return diagnostics
     log.info("EXIT  signal: price=%.2f  reasons=%s", price, ", ".join(reasons))
+    return signal
+
+
+# ─────────────────────────────────────────────
+# SHORT ENTRY  (bear mode – short selling)
+# ─────────────────────────────────────────────
+_ml_model_short = None
+
+def _get_ml_model_short():
+    global _ml_model_short
+    if _ml_model_short is None:
+        import ml_model_short as _m
+        _ml_model_short = _m
+    return _ml_model_short
+
+
+def check_short_entry(df: pd.DataFrame, weekly_bullish: bool = True,
+                      spy_df: pd.DataFrame | None = None,
+                      vixy_df: pd.DataFrame | None = None,
+                      explain: bool = False) -> dict | None:
+    """
+    Score the latest bar for a SHORT entry (bearish setup).
+
+    Looks for overbought / weakening stocks likely to fall.
+    Uses ml_model_short when ML_SHORT_ENABLED is True.
+
+    Returns a signal dict on success, or None (diagnostics dict if explain=True).
+    """
+    diagnostics = {
+        "eligible": False,
+        "score": 0,
+        "threshold": config.ENTRY_SCORE_THRESHOLD,
+        "factors": [],
+        "block_reasons": [],
+        "ml_prob": None,
+        "price": None,
+        "atr": None,
+        "reason": "",
+        "signal": None,
+    }
+
+    min_bars = max(config.MOMENTUM_LOOKBACK + 1, config.EMA_SLOPE_PERIOD + 1, 3)
+    if len(df) < min_bars:
+        reason = f"Not enough bars ({len(df)}) for short scoring"
+        diagnostics["block_reasons"].append(reason)
+        diagnostics["reason"] = reason
+        return diagnostics if explain else None
+
+    cur = df.iloc[-1]
+    prv = df.iloc[-2]
+
+    price = cur["close"]
+    ema_fast = cur["ema_fast"]
+    ema_slow = cur["ema_slow"]
+    ema_trend = cur["ema_trend"]
+    ema_200 = cur.get("ema_200", None)
+    rsi = cur["rsi"]
+    macd_hist = cur["macd_hist"]
+    adx = cur["adx"]
+    vol_ratio = cur["vol_ratio"]
+    atr = cur["atr"]
+    bb_mid = cur.get("bb_mid", None)
+    stoch_k = cur.get("stoch_k", None)
+    stoch_d = cur.get("stoch_d", None)
+
+    if pd.isna(rsi) or pd.isna(atr) or pd.isna(adx):
+        reason = "Missing key indicators (RSI/ATR/ADX)"
+        diagnostics["block_reasons"].append(reason)
+        diagnostics["reason"] = reason
+        return diagnostics if explain else None
+
+    # Gap-down exhaustion filter: skip if stock already gapped down hard today
+    prev_close = prv["close"]
+    today_open = cur["open"]
+    if prev_close > 0 and today_open > 0:
+        gap_pct = (prev_close - today_open) / prev_close  # positive = gap down
+        if gap_pct > config.GAP_UP_MAX_PCT:
+            reason = f"Gap-down {gap_pct*100:.1f}% exceeds {config.GAP_UP_MAX_PCT*100:.1f}% (exhaustion)"
+            diagnostics["block_reasons"].append(reason)
+            diagnostics["reason"] = reason
+            return diagnostics if explain else None
+
+    score = 0
+    factors: list[str] = []
+
+    # +2: Price below EMA-50 (downtrend)
+    if price < ema_trend:
+        score += 2
+        factors.append("Below EMA-50")
+
+    # +1: Price below EMA-200 (extended bear regime)
+    if ema_200 is not None and not pd.isna(ema_200) and price < ema_200:
+        score += 1
+        factors.append("Below EMA-200")
+
+    # +2: Bearish EMA crossover (fast just crossed below slow)
+    if (prv["ema_fast"] >= prv["ema_slow"]) and (ema_fast < ema_slow):
+        score += 2
+        factors.append("Bearish EMA crossover")
+
+    # +1: EMA-50 slope is falling
+    if len(df) >= config.EMA_SLOPE_PERIOD + 1:
+        ema50_now = cur["ema_trend"]
+        ema50_ago = df.iloc[-(config.EMA_SLOPE_PERIOD + 1)]["ema_trend"]
+        if not pd.isna(ema50_now) and not pd.isna(ema50_ago) and ema50_now < ema50_ago:
+            score += 1
+            factors.append("EMA-50 falling")
+
+    # +2: RSI in short entry zone (overbought-to-declining)
+    rsi_min = getattr(config, "RSI_SHORT_ENTRY_MIN", 65)
+    rsi_max = getattr(config, "RSI_SHORT_ENTRY_MAX", 85)
+    if rsi_min <= rsi <= rsi_max:
+        score += 2
+        factors.append(f"RSI short zone ({rsi:.0f})")
+    elif rsi > rsi_max:
+        score += 1
+        factors.append(f"RSI extreme overbought ({rsi:.0f})")
+
+    # +1: MACD histogram negative or turning down
+    macd_bearish = macd_hist < 0 or (
+        prv["macd_hist"] > 0 and macd_hist < prv["macd_hist"]
+    )
+    if macd_bearish:
+        score += 1
+        factors.append("MACD negative/turning down")
+
+    # +1: Volume above average (confirms selling pressure)
+    if vol_ratio >= config.VOLUME_SURGE_FACTOR:
+        score += 1
+        factors.append(f"Volume {vol_ratio:.1f}x")
+
+    # +1: ADX showing trend
+    if adx > 20:
+        score += 1
+        factors.append(f"ADX {adx:.0f}")
+
+    # +1: Price near upper Bollinger Band (overextended to upside)
+    if bb_mid is not None and not pd.isna(bb_mid) and price >= bb_mid:
+        score += 1
+        factors.append("Near BB upper")
+
+    # +1: Stochastic bearish crossover from overbought
+    if (stoch_k is not None and stoch_d is not None
+            and not pd.isna(stoch_k) and not pd.isna(stoch_d)):
+        prv_stoch_k = prv.get("stoch_k", None)
+        prv_stoch_d = prv.get("stoch_d", None)
+        if (prv_stoch_k is not None and prv_stoch_d is not None
+                and not pd.isna(prv_stoch_k) and not pd.isna(prv_stoch_d)):
+            if prv_stoch_k >= prv_stoch_d and stoch_k < stoch_d and stoch_k > 50:
+                score += 1
+                factors.append("Stoch bearish cross")
+
+    block_reasons = diagnostics["block_reasons"]
+    diagnostics["score"] = score
+    diagnostics["factors"] = factors
+
+    # ── ML-enhanced path ──────────────────────────────────────
+    if config.ML_SHORT_ENABLED:
+        ml = _get_ml_model_short()
+        ml_prob = None
+
+        if config.ML_BLEND_MODE == "gate" and score < config.ML_SHORT_MIN_SCORE:
+            reason = f"Score {score} below ML short gate minimum {config.ML_SHORT_MIN_SCORE}"
+            block_reasons.append(reason)
+            diagnostics["reason"] = reason
+            return diagnostics if explain else None
+
+        if ml.is_available():
+            ml_prob = ml.predict_short_proba(
+                df, idx=-1, weekly_bullish=weekly_bullish,
+                spy_df=spy_df, vixy_df=vixy_df,
+            )
+
+        if ml_prob is not None:
+            if ml_prob < config.ML_SHORT_ENTRY_THRESHOLD:
+                reason = (
+                    f"ML short prob {ml_prob:.3f} below threshold "
+                    f"{config.ML_SHORT_ENTRY_THRESHOLD:.3f}"
+                )
+                block_reasons.append(reason)
+                diagnostics["ml_prob"] = ml_prob
+                diagnostics["reason"] = reason
+                return diagnostics if explain else None
+            factors.append(f"ML short prob={ml_prob:.2f}")
+            diagnostics["ml_prob"] = ml_prob
+        else:
+            if score < config.ENTRY_SCORE_THRESHOLD:
+                reason = (
+                    f"Score {score} below threshold {config.ENTRY_SCORE_THRESHOLD} "
+                    f"(ML short unavailable fallback)"
+                )
+                block_reasons.append(reason)
+                diagnostics["reason"] = reason
+                return diagnostics if explain else None
+    else:
+        if score < config.ENTRY_SCORE_THRESHOLD:
+            reason = f"Score {score} below threshold {config.ENTRY_SCORE_THRESHOLD}"
+            block_reasons.append(reason)
+            diagnostics["reason"] = reason
+            return diagnostics if explain else None
+
+    reason = f"Score {score}: {', '.join(factors)}"
+    signal = {
+        "action": "SHORT",
+        "price": price,
+        "atr": atr,
+        "rsi": rsi,
+        "macd_hist": macd_hist,
+        "adx": adx,
+        "vol_ratio": vol_ratio,
+        "score": score,
+        "reason": reason,
+    }
+    if config.ML_SHORT_ENABLED and diagnostics["ml_prob"] is not None:
+        signal["ml_prob"] = diagnostics["ml_prob"]
+    diagnostics.update(
+        {
+            "eligible": True,
+            "factors": factors,
+            "price": price,
+            "atr": atr,
+            "reason": reason,
+            "signal": signal,
+        }
+    )
+    if explain:
+        return diagnostics
+    log.info("SHORT signal: price=%.2f  %s", price, reason)
+    return signal
+
+
+# ─────────────────────────────────────────────
+# SHORT EXIT  (cover when price reverses up)
+# ─────────────────────────────────────────────
+def check_short_exit(df: pd.DataFrame, entry_price: float = 0.0,
+                     hold_days: int = 0,
+                     explain: bool = False) -> dict | None:
+    """
+    Evaluate whether an open SHORT position should be covered.
+
+    HARD exits fire immediately (1 is enough).
+    SOFT exits require 2+ simultaneous signals.
+    """
+    diagnostics = {
+        "should_exit": False,
+        "signal": None,
+        "hard_reasons": [],
+        "soft_reasons": [],
+        "reasons": [],
+        "hold_reason": "",
+        "price": None,
+        "rsi": None,
+        "macd_hist": None,
+        "entry_price": entry_price,
+        "hold_days": hold_days,
+    }
+
+    if len(df) < 4:
+        diagnostics["hold_reason"] = f"Not enough bars ({len(df)}/4)"
+        return diagnostics if explain else None
+
+    cur = df.iloc[-1]
+    prv = df.iloc[-2]
+
+    price = cur["close"]
+    ema_fast = cur["ema_fast"]
+    ema_slow = cur["ema_slow"]
+    ema_trend = cur["ema_trend"]
+    ema_200 = cur.get("ema_200", None)
+    rsi = cur["rsi"]
+    macd_hist = cur["macd_hist"]
+
+    if pd.isna(rsi):
+        diagnostics["hold_reason"] = "RSI unavailable"
+        return diagnostics if explain else None
+
+    hard_reasons = []
+    soft_reasons = []
+
+    # ── HARD: price closes ABOVE both EMA-50 and EMA-200 (bull trend restored) ──
+    if ema_200 is not None and not pd.isna(ema_200):
+        if price > ema_trend and price > ema_200:
+            hard_reasons.append("Above EMA-50 & EMA-200 (trend reversed)")
+
+    # ── SOFT: RSI extremely oversold (target reached) ────────
+    if rsi <= config.RSI_OVERSOLD:
+        soft_reasons.append(f"RSI oversold ({rsi:.1f})")
+
+    # ── SOFT: Bullish EMA crossover ──────────────────────────
+    if (prv["ema_fast"] <= prv["ema_slow"]) and (ema_fast > ema_slow):
+        soft_reasons.append("Bullish EMA crossover")
+
+    # ── SOFT: MACD histogram rising for 2+ bars ──────────────
+    if (prv["macd_hist"] > 0 and macd_hist > 0
+            and macd_hist > prv["macd_hist"]):
+        soft_reasons.append("MACD rising 2+ bars")
+
+    # ── SOFT: price above EMA-50 (but trend not fully reversed) ──
+    if price > ema_trend:
+        if ema_200 is None or pd.isna(ema_200) or price <= ema_200:
+            soft_reasons.append(f"Price above EMA-{config.EMA_TREND}")
+
+    # ── SOFT: Dead money ─────────────────────────────────────
+    if entry_price > 0 and hold_days >= config.DEAD_MONEY_DAYS:
+        move_pct = abs(price - entry_price) / entry_price
+        if move_pct < config.DEAD_MONEY_THRESHOLD:
+            soft_reasons.append(
+                f"Dead money ({hold_days}d, {move_pct*100:.1f}% move)"
+            )
+
+    # ── SOFT: Momentum reversal — 20-day return turned positive ──
+    if len(df) >= config.MOMENTUM_LOOKBACK + 1:
+        past_price = df.iloc[-(config.MOMENTUM_LOOKBACK + 1)]["close"]
+        if not pd.isna(past_price) and past_price > 0:
+            mom = (price - past_price) / past_price
+            if mom > 0.05 and price > ema_trend:
+                soft_reasons.append(f"Momentum reversal (+{mom*100:.1f}%)")
+
+    # ── Decision ─────────────────────────────────────────────
+    reasons = []
+    if hard_reasons:
+        reasons = hard_reasons
+    elif len(soft_reasons) >= 2:
+        reasons = soft_reasons
+
+    diagnostics["price"] = price
+    diagnostics["rsi"] = rsi
+    diagnostics["macd_hist"] = macd_hist
+    diagnostics["hard_reasons"] = hard_reasons
+    diagnostics["soft_reasons"] = soft_reasons
+
+    if not reasons:
+        if soft_reasons:
+            diagnostics["hold_reason"] = (
+                f"Only {len(soft_reasons)}/2 soft exit signals"
+            )
+        else:
+            diagnostics["hold_reason"] = "No hard or soft exit triggers"
+        return diagnostics if explain else None
+
+    signal = {
+        "action": "COVER",
+        "price": price,
+        "rsi": rsi,
+        "macd_hist": macd_hist,
+        "reasons": reasons,
+    }
+    diagnostics.update(
+        {
+            "should_exit": True,
+            "signal": signal,
+            "reasons": reasons,
+            "hold_reason": "",
+        }
+    )
+    if explain:
+        return diagnostics
+    log.info("COVER signal: price=%.2f  reasons=%s", price, ", ".join(reasons))
+    return signal
+
+
+# ─────────────────────────────────────────────
+# INVERSE ETF ENTRY  (bear mode, low equity)
+# ─────────────────────────────────────────────
+_ml_model_inverse = None
+
+def _get_ml_model_inverse():
+    global _ml_model_inverse
+    if _ml_model_inverse is None:
+        import ml_model_inverse as _m
+        _ml_model_inverse = _m
+    return _ml_model_inverse
+
+
+def check_inverse_entry(df: pd.DataFrame, weekly_bullish: bool = True,
+                        spy_df: pd.DataFrame | None = None,
+                        vixy_df: pd.DataFrame | None = None,
+                        explain: bool = False) -> dict | None:
+    """
+    Score the latest bar for a LONG entry on an inverse ETF.
+
+    Inverse ETFs rise when the underlying index falls, so their own price
+    action looks bullish during bear markets.  We reuse the standard
+    bullish entry scoring on the ETF's bars, but gate it through the
+    dedicated inverse ML model when ML_INVERSE_ENABLED is True.
+
+    Returns a signal dict on success, or None (diagnostics dict if explain=True).
+    """
+    details = _score_entry_details(df, weekly_bullish=weekly_bullish)
+    score = details["score"]
+    factors = list(details["factors"])
+    block_reasons = list(details["block_reasons"])
+
+    diagnostics = {
+        "eligible": False,
+        "score": score,
+        "threshold": config.ENTRY_SCORE_THRESHOLD,
+        "factors": factors,
+        "block_reasons": block_reasons,
+        "ml_prob": None,
+        "price": None,
+        "atr": None,
+        "reason": "",
+        "signal": None,
+    }
+
+    if block_reasons:
+        diagnostics["reason"] = "; ".join(block_reasons)
+        return diagnostics if explain else None
+
+    # ── ML-enhanced path ──────────────────────────────────────
+    if config.ML_INVERSE_ENABLED:
+        ml = _get_ml_model_inverse()
+        ml_prob = None
+
+        if config.ML_BLEND_MODE == "gate" and score < config.ML_INVERSE_MIN_SCORE:
+            reason = (
+                f"Score {score} below ML inverse gate minimum {config.ML_INVERSE_MIN_SCORE}"
+            )
+            block_reasons.append(reason)
+            diagnostics["block_reasons"] = block_reasons
+            diagnostics["reason"] = reason
+            return diagnostics if explain else None
+
+        if ml.is_available():
+            ml_prob = ml.predict_inverse_proba(
+                df, idx=-1, weekly_bullish=weekly_bullish,
+                spy_df=spy_df, vixy_df=vixy_df,
+            )
+
+        if ml_prob is not None:
+            if ml_prob < config.ML_INVERSE_ENTRY_THRESHOLD:
+                reason = (
+                    f"ML inverse prob {ml_prob:.3f} below threshold "
+                    f"{config.ML_INVERSE_ENTRY_THRESHOLD:.3f}"
+                )
+                block_reasons.append(reason)
+                diagnostics["block_reasons"] = block_reasons
+                diagnostics["ml_prob"] = ml_prob
+                diagnostics["reason"] = reason
+                return diagnostics if explain else None
+            factors.append(f"ML inverse prob={ml_prob:.2f}")
+            diagnostics["ml_prob"] = ml_prob
+        else:
+            if score < config.ENTRY_SCORE_THRESHOLD:
+                reason = (
+                    f"Score {score} below threshold {config.ENTRY_SCORE_THRESHOLD} "
+                    f"(ML inverse unavailable fallback)"
+                )
+                block_reasons.append(reason)
+                diagnostics["block_reasons"] = block_reasons
+                diagnostics["reason"] = reason
+                return diagnostics if explain else None
+    else:
+        if score < config.ENTRY_SCORE_THRESHOLD:
+            reason = f"Score {score} below threshold {config.ENTRY_SCORE_THRESHOLD}"
+            block_reasons.append(reason)
+            diagnostics["reason"] = reason
+            return diagnostics if explain else None
+
+    cur = df.iloc[-1]
+    price = cur["close"]
+    atr = cur["atr"]
+
+    reason = f"Score {score}: {', '.join(factors)}"
+    signal = {
+        "action": "BUY",
+        "price": price,
+        "atr": atr,
+        "rsi": cur["rsi"],
+        "macd_hist": cur["macd_hist"],
+        "adx": cur["adx"],
+        "vol_ratio": cur["vol_ratio"],
+        "score": score,
+        "reason": reason,
+    }
+    if config.ML_INVERSE_ENABLED and diagnostics["ml_prob"] is not None:
+        signal["ml_prob"] = diagnostics["ml_prob"]
+    diagnostics.update(
+        {
+            "eligible": True,
+            "factors": factors,
+            "price": price,
+            "atr": atr,
+            "reason": reason,
+            "signal": signal,
+        }
+    )
+    if explain:
+        return diagnostics
+    log.info("INVERSE-ETF ENTRY signal: price=%.2f  %s", price, reason)
     return signal

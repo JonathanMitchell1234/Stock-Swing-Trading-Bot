@@ -130,7 +130,7 @@ def _is_trading_session_open(session: str) -> bool:
 @app.get("/", response_class=HTMLResponse)
 async def root():
     index = STATIC_DIR / "index.html"
-    return HTMLResponse(index.read_text())
+    return HTMLResponse(index.read_text(encoding="utf-8"))
 
 
 @app.get("/chart")
@@ -869,7 +869,7 @@ def _load_overrides() -> dict:
     """Load persisted overrides from disk (empty dict if none)."""
     if CONFIG_OVERRIDES_PATH.exists():
         try:
-            return json.loads(CONFIG_OVERRIDES_PATH.read_text())
+            return json.loads(CONFIG_OVERRIDES_PATH.read_text(encoding="utf-8"))
         except Exception:
             return {}
     return {}
@@ -912,7 +912,7 @@ def _apply_overrides(overrides: dict) -> None:
 
 def _save_and_apply(overrides: dict) -> None:
     """Persist overrides to disk and apply them live."""
-    CONFIG_OVERRIDES_PATH.write_text(json.dumps(overrides, indent=2))
+    CONFIG_OVERRIDES_PATH.write_text(json.dumps(overrides, indent=2), encoding="utf-8")
     _apply_overrides(overrides)
 
 
@@ -977,7 +977,7 @@ def _load_backtest_overrides() -> dict:
     """Load persisted backtest-specific overrides (empty dict if none)."""
     if BACKTEST_OVERRIDES_PATH.exists():
         try:
-            return json.loads(BACKTEST_OVERRIDES_PATH.read_text())
+            return json.loads(BACKTEST_OVERRIDES_PATH.read_text(encoding="utf-8"))
         except Exception:
             return {}
     return {}
@@ -985,7 +985,7 @@ def _load_backtest_overrides() -> dict:
 
 def _save_backtest_overrides(overrides: dict) -> None:
     """Persist backtest-specific overrides to disk."""
-    BACKTEST_OVERRIDES_PATH.write_text(json.dumps(overrides, indent=2))
+    BACKTEST_OVERRIDES_PATH.write_text(json.dumps(overrides, indent=2), encoding="utf-8")
 
 
 @app.get("/api/backtest/config")
@@ -1072,7 +1072,7 @@ def _set_trading_mode(mode: str) -> None:
     """Persist and apply a new trading mode — swaps URL and key pair."""
     overrides = _load_overrides()
     overrides[_TRADING_MODE_KEY] = mode
-    CONFIG_OVERRIDES_PATH.write_text(json.dumps(overrides, indent=2))
+    CONFIG_OVERRIDES_PATH.write_text(json.dumps(overrides, indent=2), encoding="utf-8")
     config.TRADING_MODE = mode
     config.BASE_URL = config.PAPER_BASE_URL if mode == "paper" else config.LIVE_BASE_URL
     # Swap the active key pair to match the selected account
@@ -1143,13 +1143,13 @@ _SHIELD_PATH = Path(__file__).parent.parent / "ejection_shield.json"
 
 def _load_shield() -> dict:
     try:
-        return json.loads(_SHIELD_PATH.read_text())
+        return json.loads(_SHIELD_PATH.read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError):
         return {}
 
 
 def _save_shield(data: dict) -> None:
-    _SHIELD_PATH.write_text(json.dumps(data, indent=2))
+    _SHIELD_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
 @app.get("/api/ejection-shield")
@@ -1274,7 +1274,7 @@ def _save_watchlists(wl: list, iwl: list) -> None:
     overrides = _load_overrides()
     overrides[_WL_KEY]  = wl
     overrides[_IWL_KEY] = iwl
-    CONFIG_OVERRIDES_PATH.write_text(json.dumps(overrides, indent=2))
+    CONFIG_OVERRIDES_PATH.write_text(json.dumps(overrides, indent=2), encoding="utf-8")
     config.WATCHLIST          = wl
     config.INVERSE_WATCHLIST  = iwl
 
@@ -1337,7 +1337,7 @@ async def reset_watchlists():
     overrides.pop(_WL_KEY,  None)
     overrides.pop(_IWL_KEY, None)
     if overrides:
-        CONFIG_OVERRIDES_PATH.write_text(json.dumps(overrides, indent=2))
+        CONFIG_OVERRIDES_PATH.write_text(json.dumps(overrides, indent=2), encoding="utf-8")
     elif CONFIG_OVERRIDES_PATH.exists():
         CONFIG_OVERRIDES_PATH.unlink()
     importlib.reload(config)

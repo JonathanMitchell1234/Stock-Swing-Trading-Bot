@@ -73,3 +73,25 @@ def test_get_trading_session_recognizes_sunday_overnight_session(monkeypatch):
 
     assert broker.get_trading_session() == "overnight"
     assert broker.is_trading_session_open() is True
+
+
+def test_submit_market_buy_caps_qty_to_buying_power(monkeypatch):
+    monkeypatch.setattr(config, "EXTENDED_HOURS_TRADING", True)
+    monkeypatch.setattr(config, "FRACTIONAL_SHARES", True)
+    monkeypatch.setattr(config, "EXTENDED_HOURS_LIMIT_OFFSET_PCT", 0.05)
+    monkeypatch.setattr(config, "MAX_PORTFOLIO_EXPOSURE_PCT", 0.95)
+
+    broker = AlpacaBroker.__new__(AlpacaBroker)
+    broker.api = DummyApi()
+    broker._should_use_extended_hours_orders = lambda: True
+    # Available BP is $100 -> max usable is $95.
+    # At limit_price = $105, 1.0 shares would cost $105 > $95.
+    # Capped qty should be 95 / 105 = 0.905 shares.
+    broker.get_buying_power = lambda: 100.0
+
+    broker.submit_market_buy("AAPL", 1.0)
+
+    assert len(broker.api.orders) == 1
+    order = broker.api.orders[0]
+    assert order["limit_price"] == 105.0
+    assert order["qty"] == 0.905

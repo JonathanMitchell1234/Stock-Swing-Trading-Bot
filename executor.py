@@ -6,6 +6,7 @@ Handles the full lifecycle: scan → signal → size → order → track.
 from __future__ import annotations
 
 import datetime as dt
+import math
 
 import pandas as pd
 
@@ -1142,10 +1143,11 @@ class TradeExecutor:
         stop_loss = self.risk.compute_stop_loss(entry_price, atr, symbol)
         take_profit = self.risk.compute_take_profit(entry_price, atr, symbol)
 
+        available_bp = self.broker.get_buying_power()
         qty = self.risk.calculate_position_size(
             entry_price=entry_price,
             stop_price=stop_loss,
-            buying_power=self.broker.get_buying_power(),
+            buying_power=available_bp,
         )
 
         # Apply volatility regime scaling
@@ -1157,6 +1159,17 @@ class TradeExecutor:
         if vix_size_scale != 1.0 and qty > 0:
             qty = round(qty * vix_size_scale, 3) if config.FRACTIONAL_SHARES else int(qty * vix_size_scale)
             log.info("VIX size scale: %.2f -> qty adjusted to %.3f", vix_size_scale, qty)
+
+        # Cap by available buying power and max position value after scaling
+        if qty > 0 and entry_price > 0:
+            usable_bp = available_bp * config.MAX_PORTFOLIO_EXPOSURE_PCT
+            max_bp_qty = usable_bp / entry_price
+            max_val_qty = (self.risk.equity * config.get_position_pct(self.risk.equity)) / entry_price
+            capped_raw = min(qty, max_bp_qty, max_val_qty)
+            if config.FRACTIONAL_SHARES:
+                qty = round(capped_raw, 3)
+            else:
+                qty = math.floor(capped_raw)
 
         if qty == 0:
             log.info("Position size = 0 for %s - skipping", symbol)
@@ -1258,10 +1271,11 @@ class TradeExecutor:
         stop_loss = self.risk.compute_stop_loss(entry_price, atr, symbol)
         take_profit = self.risk.compute_take_profit(entry_price, atr, symbol)
 
+        available_bp = self.broker.get_buying_power()
         qty = self.risk.calculate_position_size(
             entry_price=entry_price,
             stop_price=stop_loss,
-            buying_power=self.broker.get_buying_power(),
+            buying_power=available_bp,
         )
 
         # Apply inverse-ETF size scaling (same risk profile as shorts)
@@ -1280,6 +1294,17 @@ class TradeExecutor:
         if vix_size_scale != 1.0 and qty > 0:
             qty = round(qty * vix_size_scale, 3) if config.FRACTIONAL_SHARES else int(qty * vix_size_scale)
             log.info("VIX size scale: %.2f -> qty adjusted to %.3f", vix_size_scale, qty)
+
+        # Cap by available buying power and max position value after scaling
+        if qty > 0 and entry_price > 0:
+            usable_bp = available_bp * config.MAX_PORTFOLIO_EXPOSURE_PCT
+            max_bp_qty = usable_bp / entry_price
+            max_val_qty = (self.risk.equity * config.get_position_pct(self.risk.equity)) / entry_price
+            capped_raw = min(qty, max_bp_qty, max_val_qty)
+            if config.FRACTIONAL_SHARES:
+                qty = round(capped_raw, 3)
+            else:
+                qty = math.floor(capped_raw)
 
         if qty == 0:
             log.info("Position size = 0 for inverse ETF %s - skipping", symbol)
@@ -1342,10 +1367,11 @@ class TradeExecutor:
         stop_loss = self.risk.compute_short_stop_loss(entry_price, atr, symbol)
         take_profit = self.risk.compute_short_take_profit(entry_price, atr, symbol)
 
+        available_bp = self.broker.get_buying_power()
         qty = self.risk.calculate_short_position_size(
             entry_price=entry_price,
             stop_price=stop_loss,
-            buying_power=self.broker.get_buying_power(),
+            buying_power=available_bp,
         )
 
         # Apply bear-mode size scaling (shorts are riskier)
@@ -1363,6 +1389,17 @@ class TradeExecutor:
         if vix_size_scale != 1.0 and qty > 0:
             qty = round(qty * vix_size_scale, 3) if config.FRACTIONAL_SHARES else int(qty * vix_size_scale)
             log.info("VIX size scale: %.2f -> qty adjusted to %.3f", vix_size_scale, qty)
+
+        # Cap by available buying power and max position value after scaling
+        if qty > 0 and entry_price > 0:
+            usable_bp = available_bp * config.MAX_PORTFOLIO_EXPOSURE_PCT
+            max_bp_qty = usable_bp / entry_price
+            max_val_qty = (self.risk.equity * config.get_position_pct(self.risk.equity)) / entry_price
+            capped_raw = min(qty, max_bp_qty, max_val_qty)
+            if config.FRACTIONAL_SHARES:
+                qty = round(capped_raw, 3)
+            else:
+                qty = math.floor(capped_raw)
 
         if qty == 0:
             log.info("Short position size = 0 for %s - skipping", symbol)

@@ -71,13 +71,22 @@ FEATURE_NAMES: list[str] = [
     "day_of_week",          # 0=Mon … 4=Fri
     # Price-action microstructure
     "lower_wick_ratio",     # (min(open,close)-low) / (high-low)  — absorption signal
+    "upper_wick_ratio",     # (high-max(open,close)) / (high-low) — rejection signal
+    "candle_body_ratio",    # abs(close-open) / (high-low) — conviction signal
     "close_position",       # (close-low) / (high-low)  — where close sits in the range
+    # Additional range, vol & price action
+    "atr_pct",              # atr / close
+    "dist_to_high_20d",     # (close - 20d_high) / 20d_high
+    "dist_to_low_20d",      # (close - 20d_low) / 20d_low
+    "vol_price_trend",      # ret_1d * vol_ratio
+    "streak_3d",            # 3-day directional streak in [-1, +1]
     # Macro context (replaces raw month — avoids calendar overfitting)
     "spy_sma200_dist",      # SPY close / SPY SMA-200 − 1
     "vixy_relative",        # VIXY close / VIXY 20-SMA − 1
     # Relative strength (beta-adjusted)
     "spy_corr_5d",          # 5-day rolling correlation of stock vs SPY returns
     "spy_rel_strength_5d",  # 5-day cumulative stock return − SPY return
+    "spy_rel_strength_20d", # 20-day cumulative stock return − SPY return
 ]
 
 NUM_FEATURES = len(FEATURE_NAMES)
@@ -260,9 +269,38 @@ def extract_row(df: pd.DataFrame, idx: int = -1, weekly_bullish: bool = True,
     h = _safe(cur.get("high"))
     lo = _safe(cur.get("low"))
     candle_range = h - lo
-    body_low = min(o, close) if o > 0 else close
-    lower_wick_ratio = _safe_div(body_low - lo, candle_range) if candle_range > 0 else 0.0
-    close_position = _safe_div(close - lo, candle_range, 0.5) if candle_range > 0 else 0.5
+    if candle_range > 0 and o > 0:
+        body_low = min(o, close)
+        body_high = max(o, close)
+        lower_wick_ratio = _safe_div(body_low - lo, candle_range)
+        upper_wick_ratio = _safe_div(h - body_high, candle_range)
+        candle_body_ratio = _safe_div(body_high - body_low, candle_range)
+        close_position = _safe_div(close - lo, candle_range, 0.5)
+    else:
+        lower_wick_ratio = 0.0
+        upper_wick_ratio = 0.0
+        candle_body_ratio = 0.0
+        close_position = 0.5
+
+    # ── Additional range, vol & price action ────────────────
+    atr_pct = _safe_div(atr, close, 0.02)
+
+    highs_20 = df["high"].iloc[max(0, abs_idx - 19):abs_idx + 1].values
+    lows_20 = df["low"].iloc[max(0, abs_idx - 19):abs_idx + 1].values
+    high_20 = float(np.max(highs_20)) if len(highs_20) > 0 else close
+    low_20 = float(np.min(lows_20)) if len(lows_20) > 0 else close
+    dist_to_high_20d = _safe_div(close - high_20, high_20) if high_20 > 0 else 0.0
+    dist_to_low_20d = _safe_div(close - low_20, low_20) if low_20 > 0 else 0.0
+
+    vol_price_trend = ret_1d * vol_ratio
+
+    streak_slice = df["close"].iloc[max(0, abs_idx - 3):abs_idx + 1]
+    if len(streak_slice) >= 2:
+        streak_diffs = streak_slice.diff().dropna()
+        signs = np.sign(streak_diffs.values)
+        streak_3d = float(np.mean(signs)) if len(signs) > 0 else 0.0
+    else:
+        streak_3d = 0.0
 
     # ── Calendar ─────────────────────────────────────────────
     dt_index = df.index[abs_idx]
@@ -309,6 +347,7 @@ def extract_row(df: pd.DataFrame, idx: int = -1, weekly_bullish: bool = True,
     # ── Relative Strength vs SPY ──────────────────────────
     spy_corr_5d = 0.0
     spy_rel_strength_5d = 0.0
+    spy_rel_strength_20d = 0.0
     if bar_date is not None and spy_df is not None and not spy_df.empty:
         try:
             spy_idx_rs = spy_df.index.searchsorted(bar_date, side="right") - 1
@@ -324,6 +363,15 @@ def extract_row(df: pd.DataFrame, idx: int = -1, weekly_bullish: bool = True,
                         corr_matrix = np.corrcoef(sr, sp)
                         spy_corr_5d = float(corr_matrix[0, 1]) if not np.isnan(corr_matrix[0, 1]) else 0.0
                     spy_rel_strength_5d = float(sr.sum() - sp.sum())
+
+            if spy_idx_rs >= 20:
+                stock_rets_20 = df["close"].iloc[max(0, abs_idx - 20):abs_idx + 1].pct_change().dropna()
+                spy_rets_20 = spy_df["close"].iloc[max(0, spy_idx_rs - 20):spy_idx_rs + 1].pct_change().dropna()
+                min_len_20 = min(len(stock_rets_20), len(spy_rets_20))
+                if min_len_20 >= 10:
+                    sr20 = stock_rets_20.iloc[-min_len_20:].values
+                    sp20 = spy_rets_20.iloc[-min_len_20:].values
+                    spy_rel_strength_20d = float(sr20.sum() - sp20.sum())
         except Exception:
             pass
 
@@ -342,9 +390,10 @@ def extract_row(df: pd.DataFrame, idx: int = -1, weekly_bullish: bool = True,
         dist_support, dist_resistance,
         float(entry_score),
         dow,
-        lower_wick_ratio, close_position,
+        lower_wick_ratio, upper_wick_ratio, candle_body_ratio, close_position,
+        atr_pct, dist_to_high_20d, dist_to_low_20d, vol_price_trend, streak_3d,
         spy_sma200_dist, vixy_relative,
-        spy_corr_5d, spy_rel_strength_5d,
+        spy_corr_5d, spy_rel_strength_5d, spy_rel_strength_20d,
     ]
 
 

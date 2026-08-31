@@ -31,4 +31,13 @@ def test_patch_config_applies_false_bool(monkeypatch, tmp_path: Path):
 
     assert result["ok"] is True
     assert config.HMM_MOMENTUM_OVERRIDE_ENABLED is False
-    assert '"HMM_MOMENTUM_OVERRIDE_ENABLED": false' in overrides_path.read_text()
+    assert '"HMM_MOMENTUM_OVERRIDE_ENABLED": false' in overrides_path.read_text(encoding="utf-8")
+
+
+def test_root_endpoint_serves_html_utf8():
+    from fastapi.testclient import TestClient
+    client = TestClient(server.app)
+    response = client.get("/")
+    assert response.status_code == 200
+    assert "text/html" in response.headers.get("content-type", "")
+    assert len(response.text) > 0

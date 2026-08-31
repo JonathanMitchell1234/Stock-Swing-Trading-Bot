@@ -1,0 +1,3 @@
+# LightGBM booster model files must use LF line endings so internal byte offsets in tree_sizes remain valid
+models/*.txt text eol=lf
+models/*.pkl binary

@@ -6,6 +6,7 @@ Centralises all API calls so the rest of the bot never touches the SDK directly.
 from __future__ import annotations
 
 import datetime as dt
+import math
 from typing import List, Optional
 from zoneinfo import ZoneInfo
 
@@ -414,6 +415,25 @@ class AlpacaBroker:
                     else config.LIMIT_ORDER_OFFSET_PCT
                 )
                 limit_price = self._get_marketable_limit_price(symbol, "buy", offset_pct)
+
+                # Ensure limit buy notional does not exceed available buying power
+                try:
+                    bp = self.get_buying_power()
+                    max_notional = bp * config.MAX_PORTFOLIO_EXPOSURE_PCT
+                    if limit_price > 0 and (qty * limit_price) > max_notional:
+                        capped_qty = max_notional / limit_price
+                        qty = round(capped_qty, 3) if config.FRACTIONAL_SHARES else math.floor(capped_qty)
+                        log.info(
+                            "Adjusted limit buy qty to %.4f for %s to fit available buying power ($%.2f @ limit $%.2f)",
+                            qty, symbol, max_notional, limit_price,
+                        )
+                except Exception as exc:
+                    log.debug("Buying power check before limit buy failed: %s", exc)
+
+                if qty <= 0:
+                    log.warning("Skipping limit buy – qty <= 0 after buying power check for %s", symbol)
+                    return None
+
                 return self.submit_limit_buy(
                     symbol, qty, limit_price,
                     stop_loss=stop_loss, take_profit=take_profit,
@@ -541,6 +561,25 @@ class AlpacaBroker:
                     else config.LIMIT_ORDER_OFFSET_PCT
                 )
                 limit_price = self._get_marketable_limit_price(symbol, "sell", offset_pct)
+
+                # Ensure short sell notional does not exceed available buying power
+                try:
+                    bp = self.get_buying_power()
+                    max_notional = bp * config.MAX_PORTFOLIO_EXPOSURE_PCT
+                    if limit_price > 0 and (qty * limit_price) > max_notional:
+                        capped_qty = max_notional / limit_price
+                        qty = round(capped_qty, 3) if config.FRACTIONAL_SHARES else math.floor(capped_qty)
+                        log.info(
+                            "Adjusted short limit sell qty to %.4f for %s to fit available buying power ($%.2f @ limit $%.2f)",
+                            qty, symbol, max_notional, limit_price,
+                        )
+                except Exception as exc:
+                    log.debug("Buying power check before short limit sell failed: %s", exc)
+
+                if qty <= 0:
+                    log.warning("Skipping short sell – qty <= 0 after buying power check for %s", symbol)
+                    return None
+
                 order = self._submit_limit_order(
                     symbol=symbol,
                     qty=qty,

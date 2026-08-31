@@ -67,7 +67,7 @@ def _ensure_loaded() -> bool:
 
         if META_PATH.exists():
             try:
-                _meta = json.loads(META_PATH.read_text())
+                _meta = json.loads(META_PATH.read_text(encoding="utf-8"))
             except Exception:
                 _meta = None
 

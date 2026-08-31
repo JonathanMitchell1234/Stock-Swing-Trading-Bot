@@ -457,7 +457,8 @@ class Backtester:
             ema50_ago = regime_subset.iloc[-(config.EMA_SLOPE_PERIOD + 1)].get("ema_trend", None)
             if ema50_ago is not None and not pd.isna(ema50_ago):
                 if spy_close > spy_ema50 and spy_ema50 > ema50_ago:
-                    return base - 1  # strong market: lower bar (more entries)
+                    adj = getattr(config, "DYNAMIC_THRESHOLD_ADJUSTMENT", 1)
+                    return base - adj  # strong market: lower bar (more entries)
 
         return base
 
@@ -732,6 +733,19 @@ class Backtester:
         log.info("  Symbols    : %s", ", ".join(self.symbols))
         log.info("  Period     : %s -> %s", self.start_date, self.end_date)
         log.info("  Capital    : $%s", f"{self.initial_capital:,.0f}")
+        if self.param_overrides:
+            log.info("  Overrides  : %s", self.param_overrides)
+        log.info("  ENTRY_SCORE_THRESHOLD (active) : %s", config.ENTRY_SCORE_THRESHOLD)
+        if config.ML_ENABLED:
+            log.info("  ⚠ ML_ENABLED=True, ML_BLEND_MODE=%s", config.ML_BLEND_MODE)
+            if config.ML_BLEND_MODE == "gate":
+                log.info("    In 'gate' mode, ENTRY_SCORE_THRESHOLD is BYPASSED.")
+                log.info("    Entry gating uses ML_MIN_SCORE=%s + ML_ENTRY_THRESHOLD=%.2f instead.",
+                         config.ML_MIN_SCORE, config.ML_ENTRY_THRESHOLD)
+                log.info("    To change entry selectivity, adjust ML_MIN_SCORE or ML_ENTRY_THRESHOLD.")
+            elif config.ML_BLEND_MODE == "replace":
+                log.info("    In 'replace' mode, only ML_ENTRY_THRESHOLD=%.2f controls entries.",
+                         config.ML_ENTRY_THRESHOLD)
         log.info("=" * 60)
 
         self._load_data()
@@ -970,8 +984,10 @@ class Backtester:
 
                 entry_price = self._apply_slippage(signal["price"], "BUY")
                 atr = signal["atr"]
-                stop_loss = round(entry_price - atr * atr_stop_mult, 2)
-                take_profit = round(entry_price + atr * atr_profit_mult, 2)
+                # De-scale ATR for leveraged ETFs before applying multipliers
+                eff_atr = config.descale_atr(atr, symbol)
+                stop_loss = round(entry_price - eff_atr * atr_stop_mult, 2)
+                take_profit = round(entry_price + eff_atr * atr_profit_mult, 2)
 
                 qty = self._size_position(entry_price, stop_loss, date)
 
@@ -1287,11 +1303,43 @@ def main() -> None:
     else:
         start_date = end_date - dt.timedelta(days=args.months * 30)
 
+    # Load backtest-specific config overrides (separate from live overrides)
+    import json as _json
+    bt_overrides_path = os.path.join(os.path.dirname(__file__), "backtest_config_overrides.json")
+    bt_param_overrides = {}
+    if os.path.isfile(bt_overrides_path):
+        try:
+            with open(bt_overrides_path) as _f:
+                raw = _json.load(_f)
+            for key, val in raw.items():
+                if key.startswith("__") and key.endswith("__"):
+                    continue  # skip special keys like __WATCHLIST__
+                if not hasattr(config, key):
+                    continue
+                current = getattr(config, key)
+                try:
+                    if isinstance(current, bool):
+                        coerced = val if isinstance(val, bool) else str(val).lower() in ("1", "true", "yes")
+                    elif isinstance(current, int):
+                        coerced = int(val)
+                    elif isinstance(current, float):
+                        coerced = float(val)
+                    else:
+                        coerced = val
+                    bt_param_overrides[key] = coerced
+                except (ValueError, TypeError):
+                    pass
+            log.info("Loaded %d backtest config overrides from %s",
+                     len(bt_param_overrides), bt_overrides_path)
+        except Exception as exc:
+            log.warning("Failed to load backtest overrides: %s", exc)
+
     bt = Backtester(
         symbols=symbols,
         start_date=start_date,
         end_date=end_date,
         initial_capital=args.capital,
+        param_overrides=bt_param_overrides,
     )
     stats = bt.run()
 
